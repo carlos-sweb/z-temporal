@@ -9,6 +9,8 @@ const errors = @import("errors.zig");
 const TemporalError = errors.TemporalError;
 const Overflow = @import("plain_date.zig").Overflow;
 const Duration = @import("duration.zig").Duration;
+const rounding = @import("rounding.zig");
+const RoundingOptions = rounding.RoundingOptions;
 
 const NS_PER_DAY: u64 = 86_400_000_000_000;
 
@@ -18,6 +20,61 @@ fn clampField(value: i32, max: u16, overflow: Overflow) TemporalError!u16 {
         return @intCast(std.math.clamp(value, 0, @as(i32, max)));
     }
     return @intCast(value);
+}
+
+pub fn nsPerUnit(unit: rounding.Unit) i128 {
+    return switch (unit) {
+        .hour => 3_600_000_000_000,
+        .minute => 60_000_000_000,
+        .second => 1_000_000_000,
+        .millisecond => 1_000_000,
+        .microsecond => 1_000,
+        .nanosecond => 1,
+        else => unreachable,
+    };
+}
+
+/// Rounds `diff_ns` to `resolved.smallest` precision, then decomposes the
+/// result from `resolved.largest` down to nanosecond -- the field AT
+/// `resolved.largest` absorbs everything larger than it (never carries
+/// into a coarser unit), matching `duration.zig`'s `fromNanosecondsAtRank`
+/// shape. `pub` so `PlainDateTime.until`/`.since` (Phase 3b) can reuse it
+/// directly for the flat, time-unit-`largestUnit` case.
+pub fn decomposeTimeDiff(diff_ns: i128, resolved: rounding.ResolvedUnits, increment: u32, mode: rounding.RoundingMode) TemporalError!Duration {
+    const smallest_ns = nsPerUnit(resolved.smallest);
+    const rounded_units = rounding.roundRatioToIncrement(diff_ns, smallest_ns, increment, mode);
+    var remaining: i128 = rounded_units * smallest_ns;
+
+    var hours: i64 = 0;
+    var minutes: i64 = 0;
+    var seconds: i64 = 0;
+    var milliseconds: i64 = 0;
+    var microseconds: i64 = 0;
+
+    const largest_rank = @intFromEnum(resolved.largest);
+    if (largest_rank <= @intFromEnum(rounding.Unit.hour)) {
+        hours = @intCast(@divTrunc(remaining, 3_600_000_000_000));
+        remaining = @rem(remaining, 3_600_000_000_000);
+    }
+    if (largest_rank <= @intFromEnum(rounding.Unit.minute)) {
+        minutes = @intCast(@divTrunc(remaining, 60_000_000_000));
+        remaining = @rem(remaining, 60_000_000_000);
+    }
+    if (largest_rank <= @intFromEnum(rounding.Unit.second)) {
+        seconds = @intCast(@divTrunc(remaining, 1_000_000_000));
+        remaining = @rem(remaining, 1_000_000_000);
+    }
+    if (largest_rank <= @intFromEnum(rounding.Unit.millisecond)) {
+        milliseconds = @intCast(@divTrunc(remaining, 1_000_000));
+        remaining = @rem(remaining, 1_000_000);
+    }
+    if (largest_rank <= @intFromEnum(rounding.Unit.microsecond)) {
+        microseconds = @intCast(@divTrunc(remaining, 1_000));
+        remaining = @rem(remaining, 1_000);
+    }
+    const nanoseconds: i64 = @intCast(remaining);
+
+    return Duration.create(0, 0, 0, 0, hours, minutes, seconds, milliseconds, microseconds, nanoseconds);
 }
 
 pub const PlainTime = struct {
@@ -109,6 +166,21 @@ pub const PlainTime = struct {
 
     pub fn subtract(self: PlainTime, d: Duration) PlainTime {
         return self.add(d.negated());
+    }
+
+    /// No calendar complexity at all (unlike `PlainDate`/`PlainDateTime`) --
+    /// every unit involved has a fixed length, so this is ordinary
+    /// fixed-radix rounding via `decomposeTimeDiff`.
+    pub fn until(self: PlainTime, other: PlainTime, options: RoundingOptions) TemporalError!Duration {
+        const resolved = try rounding.resolveTimeUnits(options);
+        const diff_ns: i128 = @as(i128, other.totalNanoseconds()) - @as(i128, self.totalNanoseconds());
+        return decomposeTimeDiff(diff_ns, resolved, options.rounding_increment, options.rounding_mode);
+    }
+
+    pub fn since(self: PlainTime, other: PlainTime, options: RoundingOptions) TemporalError!Duration {
+        const resolved = try rounding.resolveTimeUnits(options);
+        const diff_ns: i128 = @as(i128, self.totalNanoseconds()) - @as(i128, other.totalNanoseconds());
+        return decomposeTimeDiff(diff_ns, resolved, options.rounding_increment, options.rounding_mode);
     }
 
     pub fn compare(a: PlainTime, b: PlainTime) std.math.Order {

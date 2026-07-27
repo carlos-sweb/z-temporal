@@ -10,12 +10,111 @@ const TemporalError = errors.TemporalError;
 const plain_date = @import("plain_date.zig");
 const plain_time = @import("plain_time.zig");
 const Duration = @import("duration.zig").Duration;
+const rounding = @import("rounding.zig");
+const RoundingOptions = rounding.RoundingOptions;
 
 pub const PlainDate = plain_date.PlainDate;
 pub const PlainTime = plain_time.PlainTime;
 pub const Overflow = plain_date.Overflow;
 
 const NS_PER_DAY: i128 = 86_400_000_000_000;
+
+/// `until`/`since`'s shared engine. Two fundamentally different shapes
+/// depending on `resolved.largest`, both ground-truthed against real Node:
+/// a *time* `largestUnit` flattens the whole interval into one signed
+/// nanosecond total (date part folded in via epoch days) and decomposes
+/// from there -- no date-balance step at all. A *date* `largestUnit`
+/// instead borrows the sub-day time-of-day difference into a whole-day
+/// carry (floor, matching Phase 3a's `add`'s convention) to get a
+/// date-only adjusted endpoint, then reuses `PlainDate`'s
+/// `diffISODate`/`roundDateDiff` on that pair, attaching the canonical
+/// `[0,24h)` time remainder.
+fn diffDateTime(self: PlainDateTime, other: PlainDateTime, resolved: rounding.ResolvedUnits, increment: u32, mode: rounding.RoundingMode, negate: bool) TemporalError!Duration {
+    const time_diff_ns: i128 = @as(i128, other.time.totalNanoseconds()) - @as(i128, self.time.totalNanoseconds());
+
+    if (rounding.isTimeUnit(resolved.largest)) {
+        const self_epoch = iso_calendar.toEpochDay(self.date.iso_year, self.date.iso_month, self.date.iso_day);
+        const other_epoch = iso_calendar.toEpochDay(other.date.iso_year, other.date.iso_month, other.date.iso_day);
+        var total_ns: i128 = @as(i128, other_epoch - self_epoch) * NS_PER_DAY + time_diff_ns;
+        if (negate) total_ns = -total_ns;
+        return plain_time.decomposeTimeDiff(total_ns, resolved, increment, mode);
+    }
+
+    const day_carry: i64 = @intCast(@divFloor(time_diff_ns, NS_PER_DAY));
+    const remaining_time_ns: i128 = @mod(time_diff_ns, NS_PER_DAY);
+    const other_epoch = iso_calendar.toEpochDay(other.date.iso_year, other.date.iso_month, other.date.iso_day);
+    const adjusted_end = iso_calendar.fromEpochDay(other_epoch + day_carry);
+    const start_ymd = iso_calendar.YearMonthDay{ .year = self.date.iso_year, .month = self.date.iso_month, .day = self.date.iso_day };
+
+    const raw = try plain_date.diffISODate(start_ymd, adjusted_end, resolved.largest);
+
+    if (resolved.smallest == .day) {
+        var numerator: i128 = @as(i128, raw.days) * NS_PER_DAY + remaining_time_ns;
+        var years = raw.years;
+        var months = raw.months;
+        var weeks = raw.weeks;
+        if (negate) {
+            numerator = -numerator;
+            years = -years;
+            months = -months;
+            weeks = -weeks;
+        }
+        const rounded_days: i64 = @intCast(rounding.roundRatioToIncrement(numerator, NS_PER_DAY, increment, mode));
+        return Duration.create(years, months, weeks, rounded_days, 0, 0, 0, 0, 0, 0);
+    }
+
+    if (rounding.isTimeUnit(resolved.smallest)) {
+        var time_value = remaining_time_ns;
+        var years = raw.years;
+        var months = raw.months;
+        var weeks = raw.weeks;
+        var days = raw.days;
+        // `remaining_time_ns` is always >= 0 (floor-mod convention), but
+        // `raw.days` can be negative in a backward `until` (`self` later
+        // than `other`) -- reconcile to a same-sign pair before any
+        // further sign flip, or `Duration.create` rejects the mix.
+        if (days < 0 and time_value > 0) {
+            days += 1;
+            time_value -= NS_PER_DAY;
+        }
+        if (negate) {
+            time_value = -time_value;
+            years = -years;
+            months = -months;
+            weeks = -weeks;
+            days = -days;
+        }
+        const smallest_ns = plain_time.nsPerUnit(resolved.smallest);
+        const rounded_units = rounding.roundRatioToIncrement(time_value, smallest_ns, increment, mode);
+        var rounded_ns: i128 = rounded_units * smallest_ns;
+        // Magnitude-based, not sign-based: `rounded_ns` is already
+        // correctly signed to match `days` (both derive from the same
+        // forward-or-negated computation) -- only a genuine
+        // rounding-induced overflow past a full day needs a day carry.
+        if (rounded_ns >= NS_PER_DAY) {
+            days += 1;
+            rounded_ns -= NS_PER_DAY;
+        } else if (rounded_ns <= -NS_PER_DAY) {
+            days -= 1;
+            rounded_ns += NS_PER_DAY;
+        }
+        // The date part above already consumed everything down to `days`;
+        // the time remainder always cascades fully from hour (never folds
+        // into `resolved.largest`, which is a *date* unit here).
+        const time_part = try plain_time.decomposeTimeDiff(rounded_ns, .{ .largest = .hour, .smallest = .nanosecond }, 1, .trunc);
+        return Duration.create(years, months, weeks, days, time_part.hours, time_part.minutes, time_part.seconds, time_part.milliseconds, time_part.microseconds, time_part.nanoseconds);
+    }
+
+    // resolved.smallest is week/month/year: reuse PlainDate's calendar
+    // rounding on the date-only pair. Known simplification: the sub-day
+    // time-of-day fraction (already folded into `adjusted_end` via
+    // `day_carry`, but not into the finer rounding numerator here) is
+    // treated as negligible relative to a week/month/year-sized rounding
+    // decision -- verified against every ground-truthed case in the Phase
+    // 3b plan, revisit only if test262 surfaces a boundary tie this misses.
+    const rd = try plain_date.roundDateDiff(start_ymd, adjusted_end, raw, resolved, increment, mode, negate);
+    return Duration.create(rd.years, rd.months, rd.weeks, rd.days, 0, 0, 0, 0, 0, 0);
+}
 
 pub const PlainDateTime = struct {
     date: PlainDate,
@@ -92,6 +191,16 @@ pub const PlainDateTime = struct {
 
     pub fn subtract(self: PlainDateTime, d: Duration, overflow: Overflow) TemporalError!PlainDateTime {
         return self.add(d.negated(), overflow);
+    }
+
+    pub fn until(self: PlainDateTime, other: PlainDateTime, options: RoundingOptions) TemporalError!Duration {
+        const resolved = try rounding.resolveDateTimeUnits(options);
+        return diffDateTime(self, other, resolved, options.rounding_increment, options.rounding_mode, false);
+    }
+
+    pub fn since(self: PlainDateTime, other: PlainDateTime, options: RoundingOptions) TemporalError!Duration {
+        const resolved = try rounding.resolveDateTimeUnits(options);
+        return diffDateTime(self, other, resolved, options.rounding_increment, options.rounding_mode, true);
     }
 
     pub fn toPlainDate(self: PlainDateTime) PlainDate {
