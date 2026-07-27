@@ -1,9 +1,9 @@
 //! `z-temporal` -- the TC39 Temporal API implemented from scratch in pure
 //! Zig. Phase 1: PlainDate/PlainTime/PlainDateTime, ISO calendar only, no
-//! arithmetic. Phase 2 (current): Duration (construction/validation,
-//! add/subtract, non-calendar compare, ISO string parse/format). See
-//! README.md's Scope section for the full phased roadmap and what's
-//! deliberately not here yet.
+//! arithmetic. Phase 2: Duration (construction/validation, add/subtract,
+//! non-calendar compare, ISO string parse/format). Phase 3a (current):
+//! add/subtract on the 3 Phase 1 types. See README.md's Scope section for
+//! the full phased roadmap and what's deliberately not here yet.
 const std = @import("std");
 
 pub const iso_calendar = @import("iso_calendar.zig");

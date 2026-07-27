@@ -4,14 +4,18 @@
 //! symmetrically) -- ground-truthed against real Node.
 const std = @import("std");
 const iso_string = @import("iso_string.zig");
+const iso_calendar = @import("iso_calendar.zig");
 const errors = @import("errors.zig");
 const TemporalError = errors.TemporalError;
 const plain_date = @import("plain_date.zig");
 const plain_time = @import("plain_time.zig");
+const Duration = @import("duration.zig").Duration;
 
 pub const PlainDate = plain_date.PlainDate;
 pub const PlainTime = plain_time.PlainTime;
 pub const Overflow = plain_date.Overflow;
+
+const NS_PER_DAY: i128 = 86_400_000_000_000;
 
 pub const PlainDateTime = struct {
     date: PlainDate,
@@ -61,6 +65,33 @@ pub const PlainDateTime = struct {
             nanosecond orelse self.time.nanosecond,
             overflow,
         );
+    }
+
+    /// Combines `PlainDate.addISODate` (years/months, `overflow` clamp/
+    /// reject) with a floored time-of-day wraparound (unlike
+    /// `PlainDate.add`'s truncation -- there's an existing time-of-day
+    /// here that must land in canonical `[0,24h)`, ground-truthed:
+    /// `PlainDateTime(...,0,0).add({hours:-23})` carries the date back
+    /// one day and leaves `01:00:00`, which only floored division
+    /// produces). `d.weeks`/`.days`/time-part all fold into one epoch-day
+    /// step alongside the day-carry from the wraparound.
+    pub fn add(self: PlainDateTime, d: Duration, overflow: Overflow) TemporalError!PlainDateTime {
+        const combined: i128 = @as(i128, self.time.totalNanoseconds()) + d.totalTimeNanoseconds();
+        const day_carry: i64 = @intCast(@divFloor(combined, NS_PER_DAY));
+        const ns_of_day: u64 = @intCast(@mod(combined, NS_PER_DAY));
+
+        const stepped = try plain_date.addISODate(self.date.iso_year, self.date.iso_month, self.date.iso_day, d.years, d.months, overflow);
+        const epoch_day = iso_calendar.toEpochDay(stepped.year, stepped.month, stepped.day) + d.weeks * 7 + day_carry;
+        const ymd = iso_calendar.fromEpochDay(epoch_day);
+        if (!iso_calendar.isInRange(ymd.year, ymd.month, ymd.day)) return error.InvalidRange;
+        return .{
+            .date = .{ .iso_year = ymd.year, .iso_month = ymd.month, .iso_day = ymd.day },
+            .time = PlainTime.fromNanosecondsOfDay(ns_of_day),
+        };
+    }
+
+    pub fn subtract(self: PlainDateTime, d: Duration, overflow: Overflow) TemporalError!PlainDateTime {
+        return self.add(d.negated(), overflow);
     }
 
     pub fn toPlainDate(self: PlainDateTime) PlainDate {
@@ -141,4 +172,30 @@ test "parseIso: date-only defaults time to midnight" {
     const dt = try PlainDateTime.parseIso("2024-02-29");
     try std.testing.expectEqual(@as(u8, 0), dt.time.hour);
     try std.testing.expectEqual(@as(u8, 29), dt.date.iso_day);
+}
+
+test "add: floors time-of-day carry (unlike PlainDate.add's truncation)" {
+    const dt = try PlainDateTime.create(2024, 1, 2, 0, 0, 0, 0, 0, 0, .reject);
+    const r = try dt.add(try Duration.create(0, 0, 0, 0, -23, 0, 0, 0, 0, 0), .constrain);
+    try std.testing.expectEqual(@as(u8, 1), r.date.iso_day);
+    try std.testing.expectEqual(@as(u8, 1), r.time.hour);
+}
+
+test "add: date+time+overflow combined in one call" {
+    const dt = try PlainDateTime.create(2023, 2, 28, 23, 30, 0, 0, 0, 0, .reject);
+    const r = try dt.add(try Duration.create(1, 0, 0, 1, 1, 0, 0, 0, 0, 0), .constrain);
+    try std.testing.expectEqual(@as(i32, 2024), r.date.iso_year);
+    try std.testing.expectEqual(@as(u8, 3), r.date.iso_month);
+    try std.testing.expectEqual(@as(u8, 1), r.date.iso_day);
+    try std.testing.expectEqual(@as(u8, 0), r.time.hour);
+    try std.testing.expectEqual(@as(u8, 30), r.time.minute);
+}
+
+test "subtract: crosses year boundary backward" {
+    const dt = try PlainDateTime.create(2024, 1, 1, 0, 0, 0, 0, 0, 0, .reject);
+    const r = try dt.subtract(try Duration.create(0, 0, 0, 0, 1, 0, 0, 0, 0, 0), .constrain);
+    try std.testing.expectEqual(@as(i32, 2023), r.date.iso_year);
+    try std.testing.expectEqual(@as(u8, 12), r.date.iso_month);
+    try std.testing.expectEqual(@as(u8, 31), r.date.iso_day);
+    try std.testing.expectEqual(@as(u8, 23), r.time.hour);
 }

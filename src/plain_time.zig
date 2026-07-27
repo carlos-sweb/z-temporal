@@ -8,6 +8,9 @@ const iso_string = @import("iso_string.zig");
 const errors = @import("errors.zig");
 const TemporalError = errors.TemporalError;
 const Overflow = @import("plain_date.zig").Overflow;
+const Duration = @import("duration.zig").Duration;
+
+const NS_PER_DAY: u64 = 86_400_000_000_000;
 
 fn clampField(value: i32, max: u16, overflow: Overflow) TemporalError!u16 {
     if (value < 0 or value > max) {
@@ -60,7 +63,7 @@ pub const PlainTime = struct {
         );
     }
 
-    fn totalNanoseconds(self: PlainTime) u64 {
+    pub fn totalNanoseconds(self: PlainTime) u64 {
         var t: u64 = self.hour;
         t = t * 60 + self.minute;
         t = t * 60 + self.second;
@@ -68,6 +71,44 @@ pub const PlainTime = struct {
         t = t * 1000 + self.microsecond;
         t = t * 1000 + self.nanosecond;
         return t;
+    }
+
+    /// Inverse of `totalNanoseconds`. `ns` must already be a canonical
+    /// `[0, 86_400_000_000_000)` time-of-day (callers -- `add`/`subtract`
+    /// here and on `PlainDateTime` -- get there via `@mod`, never pass a
+    /// raw signed/out-of-range value).
+    pub fn fromNanosecondsOfDay(ns: u64) PlainTime {
+        var remaining = ns;
+        const nanosecond: u16 = @intCast(remaining % 1000);
+        remaining /= 1000;
+        const microsecond: u16 = @intCast(remaining % 1000);
+        remaining /= 1000;
+        const millisecond: u16 = @intCast(remaining % 1000);
+        remaining /= 1000;
+        const second: u8 = @intCast(remaining % 60);
+        remaining /= 60;
+        const minute: u8 = @intCast(remaining % 60);
+        remaining /= 60;
+        const hour: u8 = @intCast(remaining);
+        return .{ .hour = hour, .minute = minute, .second = second, .millisecond = millisecond, .microsecond = microsecond, .nanosecond = nanosecond };
+    }
+
+    /// Pure modular arithmetic (mod 24h) -- silently ignores
+    /// `d.years`/`.months`/`.weeks`/`.days` (no date component exists to
+    /// apply them to, ground-truthed: `PlainTime.add({days:1})` behaves
+    /// identically to not passing `days` at all) and takes no `overflow`
+    /// parameter (wraparound can never produce an invalid state, so
+    /// there's nothing to constrain/reject -- ground-truthed: passing
+    /// `overflow: "reject"` in real Temporal never has any observable
+    /// effect here).
+    pub fn add(self: PlainTime, d: Duration) PlainTime {
+        const combined: i128 = @as(i128, self.totalNanoseconds()) + d.totalTimeNanoseconds();
+        const ns_of_day: u64 = @intCast(@mod(combined, @as(i128, NS_PER_DAY)));
+        return fromNanosecondsOfDay(ns_of_day);
+    }
+
+    pub fn subtract(self: PlainTime, d: Duration) PlainTime {
+        return self.add(d.negated());
     }
 
     pub fn compare(a: PlainTime, b: PlainTime) std.math.Order {
@@ -128,4 +169,25 @@ test "parseIso: time-only" {
     try std.testing.expectEqual(@as(u8, 1), t.hour);
     try std.testing.expectEqual(@as(u8, 2), t.minute);
     try std.testing.expectEqual(@as(u8, 0), t.second);
+}
+
+test "add: wraps mod 24h regardless of magnitude" {
+    const t = try PlainTime.create(12, 0, 0, 0, 0, 0, .reject);
+    const r = t.add(try Duration.create(0, 0, 0, 0, 50, 0, 0, 0, 0, 0));
+    try std.testing.expectEqual(@as(u8, 14), r.hour);
+}
+
+test "add: silently ignores calendar-unit and days duration fields" {
+    const t = try PlainTime.create(1, 0, 0, 0, 0, 0, .reject);
+    const with_days = t.add(try Duration.create(0, 0, 0, 1, 0, 0, 0, 0, 0, 0));
+    const without_days = t.add(try Duration.create(0, 0, 0, 0, 0, 0, 0, 0, 0, 0));
+    try std.testing.expect(PlainTime.equals(with_days, without_days));
+}
+
+test "subtract: wraps backward past midnight" {
+    const t = try PlainTime.create(0, 0, 0, 0, 0, 0, .reject);
+    const r = t.subtract(try Duration.create(0, 0, 0, 0, 0, 0, 0, 0, 0, 1));
+    try std.testing.expectEqual(@as(u8, 23), r.hour);
+    try std.testing.expectEqual(@as(u8, 59), r.minute);
+    try std.testing.expectEqual(@as(u16, 999), r.nanosecond);
 }

@@ -7,12 +7,40 @@ const iso_calendar = @import("iso_calendar.zig");
 const iso_string = @import("iso_string.zig");
 const errors = @import("errors.zig");
 const TemporalError = errors.TemporalError;
+const duration_mod = @import("duration.zig");
+const Duration = duration_mod.Duration;
 
 /// `.from()`/`.with()`'s `overflow` option. Constructors always behave as
 /// `.reject` (there is no `overflow` option on `new Temporal.PlainDate`
 /// itself, ground-truthed against real Node) -- callers wanting
 /// constructor semantics should pass `.reject` to `create`.
 pub const Overflow = enum { constrain, reject };
+
+/// The calendar step shared by `PlainDate.add`/`.subtract` and
+/// `PlainDateTime.add`/`.subtract` (`pub` so both can call the exact same
+/// logic, no duplication): add `add_years`/`add_months` to `year`/`month`
+/// (1-12 normalized, with year carry via floored division), then clamp/
+/// reject the day-of-month against the new month's length per `overflow`.
+/// Ground-truthed order: months are applied before any weeks/days step
+/// the caller does afterwards (`2024-01-30 + {months:1,days:1}` ==
+/// `2024-03-01`, i.e. Jan30 -constrain-> Feb29 -> +1 day -> Mar1, not the
+/// other order, which would give Feb29).
+pub fn addISODate(year: i32, month: u8, day: u8, add_years: i64, add_months: i64, overflow: Overflow) TemporalError!iso_calendar.YearMonthDay {
+    const total_months: i64 = @as(i64, month) - 1 + add_months;
+    const year_carry = @divFloor(total_months, 12);
+    const new_month: u8 = @intCast(@mod(total_months, 12) + 1);
+    const new_year_i64: i64 = @as(i64, year) + add_years + year_carry;
+    if (new_year_i64 < iso_calendar.MIN_ISO_YEAR - 1 or new_year_i64 > iso_calendar.MAX_ISO_YEAR + 1) return error.InvalidRange;
+    const new_year: i32 = @intCast(new_year_i64);
+
+    const max_day = iso_calendar.daysInMonth(new_year, new_month);
+    var d = day;
+    if (day > max_day) {
+        if (overflow == .reject) return error.InvalidRange;
+        d = max_day;
+    }
+    return .{ .year = new_year, .month = new_month, .day = d };
+}
 
 pub const PlainDate = struct {
     iso_year: i32,
@@ -56,6 +84,28 @@ pub const PlainDate = struct {
     /// `create` does.
     pub fn withFields(self: PlainDate, in_year: ?i32, in_month: ?i32, in_day: ?i32, overflow: Overflow) TemporalError!PlainDate {
         return create(in_year orelse self.iso_year, in_month orelse self.iso_month, in_day orelse self.iso_day, overflow);
+    }
+
+    /// Years/months applied first (`addISODate`, with `overflow` clamp/
+    /// reject), then weeks/days/time-part folded into a single epoch-day
+    /// step. The duration's time part **truncates toward zero** when
+    /// converted to whole days (there's no existing time-of-day to
+    /// combine with, unlike `PlainDateTime.add`, which floors) --
+    /// ground-truthed: `.add({hours:-1})` on day 1 stays day 1
+    /// (trunc(-1/24)=0), `.add({hours:-25})` from day 2 goes to day 1
+    /// (trunc(-25/24)=-1), not further.
+    pub fn add(self: PlainDate, d: Duration, overflow: Overflow) TemporalError!PlainDate {
+        const stepped = try addISODate(self.iso_year, self.iso_month, self.iso_day, d.years, d.months, overflow);
+        const days_from_time: i64 = @intCast(@divTrunc(d.totalTimeNanoseconds(), 86_400_000_000_000));
+        const extra_days: i64 = d.weeks * 7 + days_from_time;
+        const epoch_day = iso_calendar.toEpochDay(stepped.year, stepped.month, stepped.day) + extra_days;
+        const ymd = iso_calendar.fromEpochDay(epoch_day);
+        if (!iso_calendar.isInRange(ymd.year, ymd.month, ymd.day)) return error.InvalidRange;
+        return .{ .iso_year = ymd.year, .iso_month = ymd.month, .iso_day = ymd.day };
+    }
+
+    pub fn subtract(self: PlainDate, d: Duration, overflow: Overflow) TemporalError!PlainDate {
+        return self.add(d.negated(), overflow);
     }
 
     pub fn compare(a: PlainDate, b: PlainDate) std.math.Order {
@@ -181,4 +231,34 @@ test "parseIso round-trips and rejects non-iso8601 calendar" {
     const d = try PlainDate.parseIso("2024-02-29[u-ca=iso8601]");
     try std.testing.expectEqual(@as(i32, 2024), d.iso_year);
     try std.testing.expectError(error.InvalidFormat, PlainDate.parseIso("2024-02-29[u-ca=hebrew]"));
+}
+
+test "add: months applied before days (order matters), default constrain" {
+    const d = try PlainDate.create(2024, 1, 30, .reject);
+    const r = try d.add(try Duration.create(0, 1, 0, 1, 0, 0, 0, 0, 0, 0), .constrain);
+    try std.testing.expectEqual(@as(i32, 2024), r.iso_year);
+    try std.testing.expectEqual(@as(u8, 3), r.iso_month);
+    try std.testing.expectEqual(@as(u8, 1), r.iso_day);
+}
+
+test "add: reject overflow throws on invalid resulting day" {
+    const d = try PlainDate.create(2023, 1, 31, .reject);
+    try std.testing.expectError(error.InvalidRange, d.add(try Duration.create(0, 1, 0, 0, 0, 0, 0, 0, 0, 0), .reject));
+}
+
+test "add: duration time part truncates toward zero into days (no existing time-of-day)" {
+    const day1 = try PlainDate.create(2024, 1, 1, .reject);
+    const stayed = try day1.add(try Duration.create(0, 0, 0, 0, -1, 0, 0, 0, 0, 0), .constrain);
+    try std.testing.expectEqual(@as(u8, 1), stayed.iso_day);
+
+    const day2 = try PlainDate.create(2024, 1, 2, .reject);
+    const back = try day2.add(try Duration.create(0, 0, 0, 0, -25, 0, 0, 0, 0, 0), .constrain);
+    try std.testing.expectEqual(@as(u8, 1), back.iso_day);
+}
+
+test "subtract: mirrors add(negated)" {
+    const d = try PlainDate.create(2024, 3, 31, .reject);
+    const r = try d.subtract(try Duration.create(0, 1, 0, 0, 0, 0, 0, 0, 0, 0), .constrain);
+    try std.testing.expectEqual(@as(u8, 2), r.iso_month);
+    try std.testing.expectEqual(@as(u8, 29), r.iso_day);
 }

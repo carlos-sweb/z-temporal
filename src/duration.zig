@@ -145,6 +145,14 @@ pub const Duration = struct {
         return if (self.sign() < 0) self.negated() else self;
     }
 
+    /// `days`/`hours`/.../`nanoseconds` summed as nanoseconds (no calendar
+    /// units -- those have no fixed length). Used by `PlainDate`/
+    /// `PlainTime`/`PlainDateTime.add`/`.subtract` (Phase 3a) to fold the
+    /// duration's time part into a day-count-plus-time-of-day step.
+    pub fn totalTimeNanoseconds(self: Duration) i128 {
+        return timePartNanoseconds(self.days, self.hours, self.minutes, self.seconds, self.milliseconds, self.microseconds, self.nanoseconds);
+    }
+
     fn hasCalendarUnits(self: Duration) bool {
         return self.years != 0 or self.months != 0 or self.weeks != 0;
     }

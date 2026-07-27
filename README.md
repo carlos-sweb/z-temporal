@@ -7,10 +7,14 @@ The TC39 [Temporal](https://tc39.es/proposal-temporal/) API (calendar dates, wal
 
 ## Scope
 
-This is a large API, built in phases. **Phase 1** covers `PlainDate`/`PlainTime`/`PlainDateTime` construction, parsing/formatting, and field access — the ISO calendar only, no arithmetic yet. **Phase 2 (current)** adds `Duration`.
+This is a large API, built in phases. **Phase 1** covers `PlainDate`/`PlainTime`/`PlainDateTime` construction, parsing/formatting, and field access — the ISO calendar only, no arithmetic yet. **Phase 2** adds `Duration`. **Phase 3a (current)** adds `.add()`/`.subtract()` on the 3 Phase 1 types.
+
+**Supported (Phase 3a):**
+- `PlainDate`/`PlainTime`/`PlainDateTime.add()`/`.subtract()` (consuming a `Duration`): years/months applied first (with `overflow` clamp/reject on the resulting day-of-month, default `"constrain"`), then weeks/days/time folded into a single epoch-day step. `PlainDate.add`'s duration-time-to-days conversion **truncates toward zero** (no existing time-of-day to combine with); `PlainDateTime.add` instead **floors** (must land in a canonical `[0,24h)` time-of-day) — both ground-truthed, not assumed, via targeted A/B cases against real Node. `PlainTime.add`/`.subtract` are pure mod-24h wraparound: no `overflow` parameter (nothing can overflow) and silently ignores any years/months/weeks/days on the duration (no date component to apply them to).
+- `.until()`/`.since()`/`.round()` on the Plain types, and `Duration.round()`/`.total()`, are still **not** included — see below.
 
 **Supported (Phase 2):**
-- `Duration` (`years`/`months`/`weeks`/`days`/`hours`/`minutes`/`seconds`/`milliseconds`/`microseconds`/`nanoseconds`, all `i64`): `.create()`/`.parseIso()`/`.withFields()`, `.sign()`/`.blank()`/`.negated()`/`.abs()`, `.add()`/`.subtract()` (full integer balancing — ground-truthed that these never accept a years/months/weeks operand, regardless of `relativeTo`, so no calendar dependency at all here), `.compare()` (a fields-equal fast path, plus non-calendar-unit comparison by total nanoseconds — the calendar-ambiguous case needs `relativeTo`/`PlainDate` arithmetic and is `error.NeedsRelativeTo` until Phase 3), `.toIsoString()`/`.parseIso()` (full ISO 8601 duration grammar, including the fractional-designator cascade — `"PT1.5H"` → `{hours:1, minutes:30}` — and the display-time seconds/ms/µs/ns merge).
+- `Duration` (`years`/`months`/`weeks`/`days`/`hours`/`minutes`/`seconds`/`milliseconds`/`microseconds`/`nanoseconds`, all `i64`): `.create()`/`.parseIso()`/`.withFields()`, `.sign()`/`.blank()`/`.negated()`/`.abs()`, `.add()`/`.subtract()` (full integer balancing — ground-truthed that these never accept a years/months/weeks operand, regardless of `relativeTo`, so no calendar dependency at all here), `.compare()` (a fields-equal fast path, plus non-calendar-unit comparison by total nanoseconds — the calendar-ambiguous case needs `relativeTo`/`PlainDate` arithmetic and is `error.NeedsRelativeTo` until a future phase), `.toIsoString()`/`.parseIso()` (full ISO 8601 duration grammar, including the fractional-designator cascade — `"PT1.5H"` → `{hours:1, minutes:30}` — and the display-time seconds/ms/µs/ns merge).
 
 **Supported (Phase 1):**
 - `PlainDate` (`iso_year`/`iso_month`/`iso_day`): `.create()`/`.parseIso()`/`.withFields()`, `.compare()`/`.equals()`, getters (`.year()`/`.month()`/`.day()`/`.monthCode()`/`.dayOfWeek()`/`.dayOfYear()`/`.daysInMonth()`/`.daysInYear()`/`.monthsInYear()`/`.inLeapYear()`/`.weekOfYear()`), `.toIsoString()`.
@@ -21,8 +25,8 @@ This is a large API, built in phases. **Phase 1** covers `PlainDate`/`PlainTime`
 - `.from()`/`.with()`-style `overflow` handling matches real Temporal exactly (ground-truthed against Node, not assumed): `PlainDate`'s month/day **lower bound always rejects** regardless of overflow mode (only the upper bound — month>12, day>daysInMonth — respects `constrain` vs `reject`); `PlainTime`'s fields clamp **symmetrically** on both bounds under `constrain`. Plain constructors always behave as `reject` (there is no `overflow` option on `new Temporal.PlainDate(...)` itself).
 
 **Explicitly NOT included yet** (later phases, tracked in the wider z-* engine project's roadmap, not oversights):
-- `Duration.round()`/`.total()` and `.toString()`'s rounding options (`smallestUnit`/`roundingMode`/`fractionalSecondDigits`) — need calendar-aware unit balancing via `relativeTo`, i.e. `PlainDate` arithmetic (Phase 3).
-- `.add()`/`.subtract()`/`.until()`/`.since()`/`.round()` on `PlainDate`/`PlainTime`/`PlainDateTime` themselves (Phase 3) — these consume/produce `Duration`, now available, but still need calendar day-counting.
+- `.until()`/`.since()` on `PlainDate`/`PlainTime`/`PlainDateTime` — needs a calendar-aware date-diff-and-balance algorithm plus a full rounding-mode framework (`roundingIncrement`/`roundingMode`/`smallestUnit`/`largestUnit`), test262's single largest cluster in this API (Phase 3b).
+- `.round()` on `PlainTime`/`PlainDateTime`, and `Duration.round()`/`.total()` and `.toString()`'s rounding options (`smallestUnit`/`roundingMode`/`fractionalSecondDigits`) — need that same rounding-mode framework (Phase 3c).
 - `Duration`'s JS-object-protocol members (`toLocaleString`/`valueOf`/`Symbol.toStringTag`) and a property-bag `.from()` dispatcher — same JS-decoupling stance as `PlainDate` below.
 - `PlainYearMonth`/`PlainMonthDay`.
 - `Instant` (epoch nanoseconds) and `Temporal.Now`.
