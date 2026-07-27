@@ -6,9 +6,11 @@
 //! with the full rounding-mode framework (rounding.zig). Phase 3c
 //! (closes out "Phase 3: arithmetic"): round() on PlainTime/PlainDateTime,
 //! Duration.round()/.total(). Phase 4: PlainYearMonth/PlainMonthDay.
-//! Phase 5 (current): Instant. See README.md's Scope section for the
-//! full phased roadmap and what's deliberately not here yet (including
-//! two narrow, documented Phase 3c gaps).
+//! Phase 5: Instant. Phase 6 (current): Temporal.Now, scoped to
+//! `Now.instant()` (see README.md's Scope section for why every other
+//! `Now` function stays deferred to `ZonedDateTime`). See README.md's
+//! Scope section for the full phased roadmap and what's deliberately not
+//! here yet (including two narrow, documented Phase 3c gaps).
 const std = @import("std");
 
 pub const iso_calendar = @import("iso_calendar.zig");
@@ -33,6 +35,7 @@ pub const PlainDateTime = plain_date_time.PlainDateTime;
 pub const PlainYearMonth = plain_year_month.PlainYearMonth;
 pub const PlainMonthDay = plain_month_day.PlainMonthDay;
 pub const Instant = instant_mod.Instant;
+pub const Now = @import("now.zig");
 pub const Duration = duration.Duration;
 pub const Unit = rounding.Unit;
 pub const RoundingMode = rounding.RoundingMode;
