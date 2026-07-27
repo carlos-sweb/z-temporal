@@ -5,10 +5,10 @@
 //! on the 3 Phase 1 types. Phase 3b: until/since on the 3 Phase 1 types,
 //! with the full rounding-mode framework (rounding.zig). Phase 3c
 //! (closes out "Phase 3: arithmetic"): round() on PlainTime/PlainDateTime,
-//! Duration.round()/.total(). Phase 4 (current): PlainYearMonth/
-//! PlainMonthDay. See README.md's Scope section for the full phased
-//! roadmap and what's deliberately not here yet (including two narrow,
-//! documented Phase 3c gaps).
+//! Duration.round()/.total(). Phase 4: PlainYearMonth/PlainMonthDay.
+//! Phase 5 (current): Instant. See README.md's Scope section for the
+//! full phased roadmap and what's deliberately not here yet (including
+//! two narrow, documented Phase 3c gaps).
 const std = @import("std");
 
 pub const iso_calendar = @import("iso_calendar.zig");
@@ -21,6 +21,7 @@ const plain_time = @import("plain_time.zig");
 const plain_date_time = @import("plain_date_time.zig");
 const plain_year_month = @import("plain_year_month.zig");
 const plain_month_day = @import("plain_month_day.zig");
+const instant_mod = @import("instant.zig");
 const duration = @import("duration.zig");
 pub const duration_string = @import("duration_string.zig");
 const rounding = @import("rounding.zig");
@@ -31,6 +32,7 @@ pub const PlainTime = plain_time.PlainTime;
 pub const PlainDateTime = plain_date_time.PlainDateTime;
 pub const PlainYearMonth = plain_year_month.PlainYearMonth;
 pub const PlainMonthDay = plain_month_day.PlainMonthDay;
+pub const Instant = instant_mod.Instant;
 pub const Duration = duration.Duration;
 pub const Unit = rounding.Unit;
 pub const RoundingMode = rounding.RoundingMode;

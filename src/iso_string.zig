@@ -156,6 +156,82 @@ fn skipAnnotations(s: []const u8, pos: *usize) TemporalError!void {
     }
 }
 
+/// `Z`/`z`, or a signed `HH:MM[:SS[.fraction]]` offset, returned as total
+/// nanoseconds (negative for a `-` offset). Unlike `skipOffset` (which
+/// discards -- `PlainDate`/`PlainTime`/`PlainDateTime` don't need the
+/// value), `Instant` parsing must apply this to compute the correct UTC
+/// epoch value, and the offset is REQUIRED (not optional) for an Instant
+/// string -- ground-truthed: a bare local-time string throws "Required
+/// fields missing from Instant string" in real Temporal.
+fn parseRequiredOffsetNanoseconds(s: []const u8, pos: *usize) TemporalError!i64 {
+    if (pos.* >= s.len) return error.InvalidFormat;
+    if (s[pos.*] == 'Z' or s[pos.*] == 'z') {
+        pos.* += 1;
+        return 0;
+    }
+    if (s[pos.*] != '+' and s[pos.*] != '-') return error.InvalidFormat;
+    const negative = s[pos.*] == '-';
+    pos.* += 1;
+    const hour = try readNDigits(s, pos, 2);
+    try expect(s, pos, ':');
+    const minute = try readNDigits(s, pos, 2);
+    var second: u32 = 0;
+    var frac_ns: u32 = 0;
+    if (pos.* < s.len and s[pos.*] == ':') {
+        pos.* += 1;
+        second = try readNDigits(s, pos, 2);
+        if (pos.* < s.len and (s[pos.*] == '.' or s[pos.*] == ',')) {
+            pos.* += 1;
+            const start = pos.*;
+            var digits: [9]u8 = .{ '0', '0', '0', '0', '0', '0', '0', '0', '0' };
+            var i: usize = 0;
+            while (pos.* < s.len and isDigit(s[pos.*]) and i < 9) : (i += 1) {
+                digits[i] = s[pos.*];
+                pos.* += 1;
+            }
+            if (pos.* == start) return error.InvalidFormat;
+            while (pos.* < s.len and isDigit(s[pos.*])) pos.* += 1;
+            frac_ns = std.fmt.parseInt(u32, &digits, 10) catch return error.InvalidFormat;
+        }
+    }
+    if (hour > 23 or minute > 59 or second > 59) return error.InvalidFormat;
+    const total_ns: i64 = @as(i64, hour) * 3_600_000_000_000 + @as(i64, minute) * 60_000_000_000 + @as(i64, second) * 1_000_000_000 + frac_ns;
+    return if (negative) -total_ns else total_ns;
+}
+
+/// Same shape as `skipAnnotations`, but never validates a `u-ca` value --
+/// ground-truthed that `Instant.from` silently accepts (and ignores) any
+/// calendar annotation, including a critically-flagged non-iso8601 one
+/// (`[!u-ca=hebrew]`), unlike every other type in this repo.
+fn skipAnnotationsNoCalendarValidation(s: []const u8, pos: *usize) TemporalError!void {
+    while (pos.* < s.len and s[pos.*] == '[') {
+        pos.* += 1;
+        while (pos.* < s.len and s[pos.*] != ']') pos.* += 1;
+        if (pos.* >= s.len) return error.InvalidFormat;
+        pos.* += 1; // consume ']'
+    }
+}
+
+pub const ParsedInstant = struct { date: ParsedDate, time: ParsedTime, offset_nanoseconds: i64 };
+
+/// An Instant string: date part, `T`/space, time part, then a REQUIRED
+/// offset (`Z` or signed `HH:MM[:SS[.fraction]]`) -- unlike every other
+/// `parsePlain*` function here, the offset isn't optional and its value
+/// is returned (not discarded) for the caller to apply. Calendar
+/// annotations are skipped without validation (see
+/// `skipAnnotationsNoCalendarValidation`).
+pub fn parseInstant(s: []const u8) TemporalError!ParsedInstant {
+    var pos: usize = 0;
+    const date = try parseDatePart(s, &pos);
+    if (pos >= s.len or (s[pos] != 'T' and s[pos] != 't' and s[pos] != ' ')) return error.InvalidFormat;
+    pos += 1;
+    const time = try parseTimePart(s, &pos);
+    const offset_nanoseconds = try parseRequiredOffsetNanoseconds(s, &pos);
+    try skipAnnotationsNoCalendarValidation(s, &pos);
+    if (pos != s.len) return error.InvalidFormat;
+    return .{ .date = date, .time = time, .offset_nanoseconds = offset_nanoseconds };
+}
+
 /// A PlainDate string: date part, then an optional (ignored) time+offset,
 /// then optional annotations. Trailing content after the date part is
 /// tolerated only in these well-formed shapes -- anything else is

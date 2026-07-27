@@ -18,6 +18,7 @@ pub fn build(b: *std.Build) void {
         "tests/duration_test.zig",
         "tests/plain_year_month_test.zig",
         "tests/plain_month_day_test.zig",
+        "tests/instant_test.zig",
     };
 
     inline for (test_files) |test_file| {

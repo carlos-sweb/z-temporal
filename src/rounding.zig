@@ -74,6 +74,20 @@ pub fn validateIncrement(unit: Unit, increment: u32) TemporalError!void {
     }
 }
 
+/// Same divisibility rule as `validateIncrement`, but the cap is
+/// INCLUSIVE of the full cycle length -- ground-truthed that `Instant`
+/// (which never wraps, unlike a clock-of-day value) allows
+/// `roundingIncrement: 24` for `smallestUnit: "hour"` (`25` is the first
+/// rejected value), where `PlainTime`/`PlainDateTime.round` reject `24`
+/// itself. Used only by `Instant.round`.
+pub fn validateIncrementInclusive(unit: Unit, increment: u32) TemporalError!void {
+    if (increment < 1) return error.InvalidRange;
+    if (cycleLength(unit)) |cycle| {
+        if (increment > cycle) return error.InvalidRange;
+        if (cycle % increment != 0) return error.InvalidRange;
+    }
+}
+
 pub const ResolvedUnits = struct { largest: Unit, smallest: Unit };
 
 fn resolveUnits(options: RoundingOptions, default_largest: Unit, default_smallest: Unit, comptime allowed: fn (Unit) bool) TemporalError!ResolvedUnits {
@@ -106,6 +120,14 @@ pub fn resolveDateTimeUnits(options: RoundingOptions) TemporalError!ResolvedUnit
             return true;
         }
     }.f);
+}
+
+/// `Instant`: time units only (hour..nanosecond, same restricted range as
+/// `PlainTime`), but default largestUnit is "second" -- ground-truthed
+/// this differs from `PlainTime`'s own "hour" default (`i.until(j)` on a
+/// >1-day gap prints a flat `PT90061S`, not `PT25H1M1S`).
+pub fn resolveInstantUnits(options: RoundingOptions) TemporalError!ResolvedUnits {
+    return resolveUnits(options, .second, .nanosecond, isTimeUnit);
 }
 
 /// Rounds `numerator/denominator` (`denominator > 0`) to the nearest
