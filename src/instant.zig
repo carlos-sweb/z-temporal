@@ -15,6 +15,7 @@ const Duration = duration_mod.Duration;
 const plain_time = @import("plain_time.zig");
 const rounding = @import("rounding.zig");
 const RoundingOptions = rounding.RoundingOptions;
+const zoned_date_time = @import("zoned_date_time.zig");
 
 const NS_PER_DAY: i128 = 86_400_000_000_000;
 
@@ -156,6 +157,13 @@ pub const Instant = struct {
         return std.fmt.allocPrint(allocator, "{s}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}{s}Z", .{
             year_str, ymd.month, ymd.day, time.hour, time.minute, time.second, frac,
         });
+    }
+
+    /// Closes out the deferred item noted in this file's Phase 5 doc
+    /// comment: pairs this exact instant with a time zone -- trivial, no
+    /// disambiguation needed (an `Instant` is already exact).
+    pub fn toZonedDateTimeISO(self: Instant, allocator: std.mem.Allocator, io: std.Io, time_zone_id: []const u8) TemporalError!zoned_date_time.ZonedDateTime {
+        return zoned_date_time.ZonedDateTime.create(allocator, io, self.epoch_nanoseconds, time_zone_id);
     }
 };
 

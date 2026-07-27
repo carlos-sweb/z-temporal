@@ -10,5 +10,7 @@
         "src/",
         "README.md",
     },
-    .dependencies = .{},
+    .dependencies = .{
+        .zdate = .{ .path = "../z-date" },
+    },
 }

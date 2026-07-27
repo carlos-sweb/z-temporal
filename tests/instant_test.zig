@@ -119,3 +119,13 @@ test "public API: until/since" {
     defer allocator.free(s2);
     try std.testing.expectEqualStrings("PT25H1M1S", s2);
 }
+
+test "public API: toZonedDateTimeISO" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const i = try Instant.fromEpochNanoseconds(1_718_467_200_000_000_000);
+    const z = try i.toZonedDateTimeISO(allocator, io, "America/New_York");
+    const s = try z.toIsoString(allocator, io, true, true, false);
+    defer allocator.free(s);
+    try std.testing.expectEqualStrings("2024-06-15T12:00:00-04:00[America/New_York]", s);
+}

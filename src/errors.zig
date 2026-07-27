@@ -21,5 +21,15 @@ pub const TemporalError = error{
     /// `relativeTo` and calendar-aware balancing (`PlainDate` arithmetic,
     /// a later phase), unlike `MixedCalendarUnits`.
     NeedsRelativeTo,
+    /// `ZonedDateTime`'s `timeZoneId` doesn't name a loadable IANA zone
+    /// (no such zoneinfo file, an unparseable TZif, or a name attempting
+    /// to escape the zoneinfo directory) -- wraps whatever `zdate.Timezone`
+    /// loading reported, since those errors aren't part of this set.
+    InvalidTimeZone,
+    /// `ZonedDateTime` parsing/construction with `disambiguation: "reject"`
+    /// on an ambiguous wall-clock time (a DST gap or fold), or
+    /// `offset: "reject"` (the default) when a given offset doesn't match
+    /// what the time zone says at that wall-clock time.
+    AmbiguousTime,
     OutOfMemory,
 };

@@ -4,9 +4,13 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const zdate_dep = b.dependency("zdate", .{ .target = target, .optimize = optimize });
+    const zdate_module = zdate_dep.module("zdate");
+
     const ztemporal_module = b.addModule("ztemporal", .{
         .root_source_file = b.path("src/ztemporal.zig"),
     });
+    ztemporal_module.addImport("zdate", zdate_module);
 
     const test_step = b.step("test", "Run all tests");
 
@@ -20,6 +24,7 @@ pub fn build(b: *std.Build) void {
         "tests/plain_month_day_test.zig",
         "tests/instant_test.zig",
         "tests/now_test.zig",
+        "tests/zoned_date_time_test.zig",
     };
 
     inline for (test_files) |test_file| {

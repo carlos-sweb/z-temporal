@@ -6,11 +6,14 @@
 //! with the full rounding-mode framework (rounding.zig). Phase 3c
 //! (closes out "Phase 3: arithmetic"): round() on PlainTime/PlainDateTime,
 //! Duration.round()/.total(). Phase 4: PlainYearMonth/PlainMonthDay.
-//! Phase 5: Instant. Phase 6 (current): Temporal.Now, scoped to
-//! `Now.instant()` (see README.md's Scope section for why every other
-//! `Now` function stays deferred to `ZonedDateTime`). See README.md's
-//! Scope section for the full phased roadmap and what's deliberately not
-//! here yet (including two narrow, documented Phase 3c gaps).
+//! Phase 5: Instant. Phase 6: Temporal.Now, scoped to `Now.instant()`.
+//! Phase 7a (current): ZonedDateTime -- construction, disambiguation/
+//! offset resolution, getters, conversions, string I/O (this repo's
+//! first type needing real I/O: reads IANA tzdata via the new `z-date`
+//! dependency). See README.md's Scope section for the full phased
+//! roadmap and what's deliberately not here yet (including two narrow,
+//! documented Phase 3c gaps, and Phase 7b/7c's still-deferred
+//! ZonedDateTime arithmetic/until/since/round).
 const std = @import("std");
 
 pub const iso_calendar = @import("iso_calendar.zig");
@@ -24,6 +27,7 @@ const plain_date_time = @import("plain_date_time.zig");
 const plain_year_month = @import("plain_year_month.zig");
 const plain_month_day = @import("plain_month_day.zig");
 const instant_mod = @import("instant.zig");
+const zoned_date_time_mod = @import("zoned_date_time.zig");
 const duration = @import("duration.zig");
 pub const duration_string = @import("duration_string.zig");
 const rounding = @import("rounding.zig");
@@ -35,6 +39,9 @@ pub const PlainDateTime = plain_date_time.PlainDateTime;
 pub const PlainYearMonth = plain_year_month.PlainYearMonth;
 pub const PlainMonthDay = plain_month_day.PlainMonthDay;
 pub const Instant = instant_mod.Instant;
+pub const ZonedDateTime = zoned_date_time_mod.ZonedDateTime;
+pub const OffsetOption = zoned_date_time_mod.OffsetOption;
+pub const Disambiguation = zoned_date_time_mod.Disambiguation;
 pub const Now = @import("now.zig");
 pub const Duration = duration.Duration;
 pub const Unit = rounding.Unit;

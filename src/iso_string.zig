@@ -232,6 +232,46 @@ pub fn parseInstant(s: []const u8) TemporalError!ParsedInstant {
     return .{ .date = date, .time = time, .offset_nanoseconds = offset_nanoseconds };
 }
 
+pub const ParsedZonedDateTime = struct { date: ParsedDate, time: ParsedTime, offset_nanoseconds: ?i64, time_zone_id: []const u8 };
+
+/// A ZonedDateTime string: date part, `T`/space, time part, then an
+/// OPTIONAL offset (`Z` or signed `HH:MM[:SS[.fraction]]` -- ground-truthed
+/// this differs from `Instant`, where the offset is required; here it's
+/// the time zone annotation that's required instead), then a REQUIRED
+/// `[TimeZoneName]` bracket (the first bracket; a bare name, not a
+/// `key=value` annotation -- ground-truthed: `ZonedDateTime.from()`
+/// without one throws "Time zone annotation is required"), then optional
+/// further annotations (only `u-ca=` is inspected, validated against
+/// `iso8601` only via the ordinary `skipAnnotations` -- unlike `Instant`,
+/// `ZonedDateTime` rejects non-iso8601 calendars like every Plain type,
+/// since its getters actually depend on calendar semantics).
+pub fn parseZonedDateTime(s: []const u8) TemporalError!ParsedZonedDateTime {
+    var pos: usize = 0;
+    const date = try parseDatePart(s, &pos);
+    if (pos >= s.len or (s[pos] != 'T' and s[pos] != 't' and s[pos] != ' ')) return error.InvalidFormat;
+    pos += 1;
+    const time = try parseTimePart(s, &pos);
+
+    var offset_nanoseconds: ?i64 = null;
+    if (pos < s.len and (s[pos] == 'Z' or s[pos] == 'z' or s[pos] == '+' or s[pos] == '-')) {
+        offset_nanoseconds = try parseRequiredOffsetNanoseconds(s, &pos);
+    }
+
+    if (pos >= s.len or s[pos] != '[') return error.InvalidFormat;
+    pos += 1;
+    const tz_start = pos;
+    while (pos < s.len and s[pos] != ']') pos += 1;
+    if (pos >= s.len) return error.InvalidFormat;
+    var time_zone_id = s[tz_start..pos];
+    pos += 1; // consume ']'
+    if (time_zone_id.len > 0 and time_zone_id[0] == '!') time_zone_id = time_zone_id[1..];
+    if (time_zone_id.len == 0 or std.mem.indexOfScalar(u8, time_zone_id, '=') != null) return error.InvalidFormat;
+
+    try skipAnnotations(s, &pos);
+    if (pos != s.len) return error.InvalidFormat;
+    return .{ .date = date, .time = time, .offset_nanoseconds = offset_nanoseconds, .time_zone_id = time_zone_id };
+}
+
 /// A PlainDate string: date part, then an optional (ignored) time+offset,
 /// then optional annotations. Trailing content after the date part is
 /// tolerated only in these well-formed shapes -- anything else is
