@@ -12,6 +12,12 @@ const iso_string = @import("iso_string.zig");
 const duration_string = @import("duration_string.zig");
 const errors = @import("errors.zig");
 const TemporalError = errors.TemporalError;
+const iso_calendar = @import("iso_calendar.zig");
+const rounding = @import("rounding.zig");
+const plain_date = @import("plain_date.zig");
+const plain_date_time = @import("plain_date_time.zig");
+
+const NS_PER_DAY: i128 = 86_400_000_000_000;
 
 /// Each field's magnitude bound (`2^32 - 1`) and the combined time-part's
 /// total-nanoseconds bound (`2^53 * 10^9 - 1`) were reverse-engineered by
@@ -195,6 +201,173 @@ pub const Duration = struct {
 
     pub fn subtract(self: Duration, other: Duration) TemporalError!Duration {
         return self.add(other.negated());
+    }
+
+    /// The largest unit (year..nanosecond) with a nonzero field, or
+    /// `.nanosecond` if `self.blank()`. Used by `round`/`.total` to
+    /// auto-resolve `largestUnit` when the caller only supplies
+    /// `smallestUnit` -- ground-truthed that this (not a fixed per-type
+    /// default, unlike `until`/`since`) is what real Temporal does.
+    fn largestPresentUnit(self: Duration) rounding.Unit {
+        if (self.years != 0) return .year;
+        if (self.months != 0) return .month;
+        if (self.weeks != 0) return .week;
+        if (self.days != 0) return .day;
+        if (self.hours != 0) return .hour;
+        if (self.minutes != 0) return .minute;
+        if (self.seconds != 0) return .second;
+        if (self.milliseconds != 0) return .millisecond;
+        if (self.microseconds != 0) return .microsecond;
+        return .nanosecond;
+    }
+
+    /// `largestUnit` when omitted: the caller's explicit `smallestUnit` if
+    /// it's COARSER than `self`'s own largest field (ground-truthed:
+    /// `{hours:25,minutes:30}.round({smallestUnit:"day"})` -> `P1D`, a
+    /// flat single unit, not `self`'s own `hour`); otherwise `self`'s own
+    /// largest field (ground-truthed: `{years:1,months:6}.round({
+    /// smallestUnit:"day",...})` -> `P1Y6M`, keeping `year`).
+    fn resolvedLargestForRound(self: Duration, options: rounding.RoundOptions) rounding.Unit {
+        if (options.largest_unit) |lu| return lu;
+        const self_largest = self.largestPresentUnit();
+        if (options.smallest_unit) |su| {
+            return if (@intFromEnum(su) < @intFromEnum(self_largest)) su else self_largest;
+        }
+        return self_largest;
+    }
+
+    fn isCalendarOnlyUnit(u: rounding.Unit) bool {
+        return u == .year or u == .month or u == .week;
+    }
+
+    /// `relativeTo` is mandatory whenever a year/month/week unit is
+    /// INVOLVED, whether that's a field already present on `self` or one
+    /// of the requested `largest`/`smallest` units -- ground-truthed:
+    /// `{hours:100}.round({smallestUnit:"week"})` (no calendar field on
+    /// `self` at all) still throws without `relativeTo`, since weeks
+    /// (unlike day and finer) aren't a fixed length relative to a
+    /// calendar-free instant.
+    fn requiresRelativeTo(self: Duration, largest: rounding.Unit, smallest: rounding.Unit) bool {
+        return self.hasCalendarUnits() or isCalendarOnlyUnit(largest) or isCalendarOnlyUnit(smallest);
+    }
+
+    fn rankFromUnit(unit: rounding.Unit) u8 {
+        return switch (unit) {
+            .day => 0,
+            .hour => 1,
+            .minute => 2,
+            .second => 3,
+            .millisecond => 4,
+            .microsecond => 5,
+            .nanosecond => 6,
+            else => unreachable,
+        };
+    }
+
+    fn nsPerUnitFor(unit: rounding.Unit) i128 {
+        return switch (unit) {
+            .week => 7 * NS_PER_DAY,
+            .day => NS_PER_DAY,
+            .hour => 3_600_000_000_000,
+            .minute => 60_000_000_000,
+            .second => 1_000_000_000,
+            .millisecond => 1_000_000,
+            .microsecond => 1_000,
+            .nanosecond => 1,
+            else => unreachable,
+        };
+    }
+
+    /// `total_ns` rounded to `target_rank`'s unit, then decomposed the
+    /// same way `add`/`subtract` already do via `fromNanosecondsAtRank`.
+    fn fromNanosecondsAtRankRounded(total_ns: i128, target_rank: u8, increment: u32, mode: rounding.RoundingMode) TemporalError!Duration {
+        const denom = rankDenom(target_rank);
+        const rounded_units = rounding.roundRatioToIncrement(total_ns, denom, increment, mode);
+        return fromNanosecondsAtRank(rounded_units * denom, target_rank);
+    }
+
+    fn rankDenom(rank: u8) i128 {
+        return switch (rank) {
+            0 => NS_PER_DAY,
+            1 => 3_600_000_000_000,
+            2 => 60_000_000_000,
+            3 => 1_000_000_000,
+            4 => 1_000_000,
+            5 => 1_000,
+            else => 1,
+        };
+    }
+
+    /// Rounds to `options.smallest_unit`/`.largest_unit` (at least one
+    /// required). Ground-truthed real Temporal's actual composition
+    /// whenever a year/month/week unit is involved: `round` with
+    /// `relativeTo` is exactly `relativeTo-at-midnight.until(
+    /// relativeTo-at-midnight.add(self), options)` -- confirmed including
+    /// the mixed calendar+time case (`{years:1,hours:30}.round({
+    /// smallestUnit:"hour", relativeTo:"2024-01-01"})` -> `P1Y1DT6H`,
+    /// which needs `PlainDateTime`'s balance, not a bare `PlainDate`'s --
+    /// so this always anchors at midnight via `PlainDateTime`, never
+    /// `PlainDate` directly, even for a calendar-only duration (degrades
+    /// to the same result either way there). No `relativeTo` needed (and
+    /// none used, even if supplied) when neither the duration's own
+    /// fields nor the requested units involve year/month/week.
+    pub fn round(self: Duration, relative_to: ?plain_date.PlainDate, options: rounding.RoundOptions) TemporalError!Duration {
+        if (options.smallest_unit == null and options.largest_unit == null) return error.InvalidRange;
+        const resolved_largest = self.resolvedLargestForRound(options);
+        const resolved_smallest = options.smallest_unit orelse .nanosecond;
+        if (@intFromEnum(resolved_largest) > @intFromEnum(resolved_smallest)) return error.InvalidRange;
+        try rounding.validateIncrement(resolved_smallest, options.rounding_increment);
+
+        if (relative_to) |rt| {
+            const start_dt = plain_date_time.PlainDateTime{ .date = rt, .time = .{} };
+            const end_dt = try start_dt.add(self, .constrain);
+            return start_dt.until(end_dt, .{
+                .largest_unit = resolved_largest,
+                .smallest_unit = resolved_smallest,
+                .rounding_increment = options.rounding_increment,
+                .rounding_mode = options.rounding_mode,
+            });
+        }
+        if (self.requiresRelativeTo(resolved_largest, resolved_smallest)) return error.NeedsRelativeTo;
+        return fromNanosecondsAtRankRounded(self.totalTimeNanoseconds(), rankFromUnit(resolved_largest), options.rounding_increment, options.rounding_mode);
+    }
+
+    fn totalWithRelativeTo(self: Duration, rt: plain_date.PlainDate, unit: rounding.Unit) TemporalError!f64 {
+        const start_dt = plain_date_time.PlainDateTime{ .date = rt, .time = .{} };
+        const end_dt = try start_dt.add(self, .constrain);
+        const start_epoch = iso_calendar.toEpochDay(rt.iso_year, rt.iso_month, rt.iso_day);
+        const end_epoch = iso_calendar.toEpochDay(end_dt.date.iso_year, end_dt.date.iso_month, end_dt.date.iso_day);
+        if (rounding.isTimeUnit(unit)) {
+            const total_ns: i128 = (end_epoch - start_epoch) * NS_PER_DAY + (@as(i128, end_dt.time.totalNanoseconds()) - @as(i128, start_dt.time.totalNanoseconds()));
+            return @as(f64, @floatFromInt(total_ns)) / @as(f64, @floatFromInt(nsPerUnitFor(unit)));
+        }
+        // `day`/`week` are fixed-length, so the sub-day time fraction
+        // folds in exactly (ground-truthed: a pure-time duration like
+        // `{hours:1,minutes:11}` against `unit:"week"` must still produce
+        // a nonzero fraction, e.g. `0.00704...` -- a bug caught here when
+        // `end_dt.date` alone equals `start_dt.date`, which would
+        // otherwise silently drop the entire time component to 0).
+        const time_frac: f64 = @as(f64, @floatFromInt(end_dt.time.totalNanoseconds())) / @as(f64, @floatFromInt(NS_PER_DAY));
+        const days_f: f64 = @as(f64, @floatFromInt(end_epoch - start_epoch)) + time_frac;
+        if (unit == .day) return days_f;
+        if (unit == .week) return days_f / 7.0;
+        // `month`/`year`: known simplification (documented in the Phase
+        // 3b plan for `PlainDateTime`'s own week/month/year rounding) --
+        // the sub-day time fraction's contribution to a month/year-sized
+        // rounding decision is treated as negligible.
+        return plain_date.totalUnitsBetween(rt.asYMD(), end_dt.date.asYMD(), unit);
+    }
+
+    /// Returns the exact (unrounded) fraction of `unit` the duration
+    /// represents, as a plain `f64` -- NOT a `Duration` (ground-truthed:
+    /// `{hours:36,minutes:30}.total({unit:"day"})` -> `1.5208333333333333`).
+    /// Same `relativeTo` requirement as `round` (`requiresRelativeTo`,
+    /// checked against `unit` alone here since `total` has no separate
+    /// largest/smallest pair).
+    pub fn total(self: Duration, relative_to: ?plain_date.PlainDate, unit: rounding.Unit) TemporalError!f64 {
+        if (relative_to) |rt| return self.totalWithRelativeTo(rt, unit);
+        if (self.hasCalendarUnits() or isCalendarOnlyUnit(unit)) return error.NeedsRelativeTo;
+        return @as(f64, @floatFromInt(self.totalTimeNanoseconds())) / @as(f64, @floatFromInt(nsPerUnitFor(unit)));
     }
 
     /// 0=days .. 6=nanoseconds; the most-significant nonzero time-part

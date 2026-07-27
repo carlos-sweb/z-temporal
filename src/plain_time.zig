@@ -168,6 +168,21 @@ pub const PlainTime = struct {
         return self.add(d.negated());
     }
 
+    /// Rounds to `options.smallest_unit` (required -- there's no natural
+    /// finest-default for a single-value rounding, unlike `until`/`since`),
+    /// wrapping mod-24h with no day-carry concept (`23:59:30` rounded to
+    /// the nearest minute -> `00:00:00`), ground-truthed against real
+    /// Node's default `roundingMode: "halfExpand"`.
+    pub fn round(self: PlainTime, options: rounding.RoundOptions) TemporalError!PlainTime {
+        const smallest = options.smallest_unit orelse return error.InvalidRange;
+        if (!rounding.isTimeUnit(smallest)) return error.InvalidRange;
+        try rounding.validateIncrement(smallest, options.rounding_increment);
+        const smallest_ns = nsPerUnit(smallest);
+        const rounded_units = rounding.roundRatioToIncrement(self.totalNanoseconds(), smallest_ns, options.rounding_increment, options.rounding_mode);
+        const ns_of_day: u64 = @intCast(@mod(rounded_units * smallest_ns, @as(i128, NS_PER_DAY)));
+        return fromNanosecondsOfDay(ns_of_day);
+    }
+
     /// No calendar complexity at all (unlike `PlainDate`/`PlainDateTime`) --
     /// every unit involved has a fixed length, so this is ordinary
     /// fixed-radix rounding via `decomposeTimeDiff`.

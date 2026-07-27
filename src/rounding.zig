@@ -22,12 +22,34 @@ pub const RoundingOptions = struct {
     rounding_mode: RoundingMode = .trunc,
 };
 
+/// Used by the `round()` family (`PlainTime`/`PlainDateTime.round`,
+/// `Duration.round`) instead of `RoundingOptions` -- same shape, but the
+/// default `rounding_mode` is `.half_expand`, not `.trunc` (ground-truthed:
+/// real Temporal's `round()`/`.total()` default is the opposite of
+/// `until`/`since`'s). A plain struct default can't distinguish "caller
+/// explicitly passed `.trunc`" from "left it defaulted", so this is a
+/// separate type rather than a shared one with a mutable default.
+pub const RoundOptions = struct {
+    largest_unit: ?Unit = null,
+    smallest_unit: ?Unit = null,
+    rounding_increment: u32 = 1,
+    rounding_mode: RoundingMode = .half_expand,
+};
+
 pub fn isDateUnit(unit: Unit) bool {
     return @intFromEnum(unit) <= @intFromEnum(Unit.day);
 }
 
 pub fn isTimeUnit(unit: Unit) bool {
     return @intFromEnum(unit) >= @intFromEnum(Unit.hour);
+}
+
+/// `PlainDateTime.round`'s allowed `smallestUnit` range: time units plus
+/// `.day` -- ground-truthed that week/month/year all throw ("Found date
+/// unit, expect time unit"), unlike `until`/`since` which allow the full
+/// date-unit range.
+pub fn isTimeUnitOrDay(unit: Unit) bool {
+    return unit == .day or isTimeUnit(unit);
 }
 
 /// `null` for year/month/week/day -- ground-truthed against real Node to

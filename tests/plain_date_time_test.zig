@@ -136,6 +136,32 @@ test "until/since: random-batch differential against real Node" {
     }
 }
 
+test "round: smallestUnit=day uses noon as the halfExpand tie point" {
+    const dt = try PlainDateTime.create(2024, 1, 1, 12, 0, 0, 0, 0, 0, .reject);
+    const r = try dt.round(.{ .smallest_unit = .day });
+    try std.testing.expectEqual(@as(u8, 2), r.date.iso_day);
+    try std.testing.expectEqual(@as(u8, 0), r.time.hour);
+
+    const before_noon = try PlainDateTime.create(2024, 1, 1, 11, 59, 59, 0, 0, 0, .reject);
+    const stays = try before_noon.round(.{ .smallest_unit = .day });
+    try std.testing.expectEqual(@as(u8, 1), stays.date.iso_day);
+}
+
+test "round: minute overflow carries into the next day" {
+    const dt = try PlainDateTime.create(2024, 1, 1, 23, 59, 30, 0, 0, 0, .reject);
+    const r = try dt.round(.{ .smallest_unit = .minute });
+    try std.testing.expectEqual(@as(u8, 2), r.date.iso_day);
+    try std.testing.expectEqual(@as(u8, 0), r.time.hour);
+    try std.testing.expectEqual(@as(u8, 0), r.time.minute);
+}
+
+test "round: rejects week/month/year smallestUnit (date units not allowed)" {
+    const dt = try PlainDateTime.create(2024, 1, 15, 12, 0, 0, 0, 0, 0, .reject);
+    try std.testing.expectError(error.InvalidRange, dt.round(.{ .smallest_unit = .month }));
+    try std.testing.expectError(error.InvalidRange, dt.round(.{ .smallest_unit = .week }));
+    try std.testing.expectError(error.InvalidRange, dt.round(.{ .smallest_unit = .year }));
+}
+
 test "until: rejects smallestUnit finer than largestUnit" {
     const a = try PlainDateTime.create(2024, 1, 1, 0, 0, 0, 0, 0, 0, .reject);
     const b = try PlainDateTime.create(2024, 1, 2, 0, 0, 0, 0, 0, 0, .reject);

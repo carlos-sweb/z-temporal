@@ -198,6 +198,21 @@ pub fn roundDateDiff(start: iso_calendar.YearMonthDay, end: iso_calendar.YearMon
                 .intermediate = raw.intermediate,
             };
         },
+        // KNOWN LIMITATION (Phase 3c ground-truthing): when `raw` came
+        // from the year/month family (`resolved.largest` is `.year` or
+        // `.month`, so `raw.weeks == 0` and this branch is only adjusting
+        // the trailing day-remainder into weeks) AND the direction is
+        // backward (`end` before `start`), the 5 half-* rounding modes
+        // (`half_ceil`/`half_floor`/`half_trunc`/`half_expand`/
+        // `half_even`) do not always match real Temporal -- confirmed
+        // `ceil`/`floor`/`trunc`/`expand` (non-tie-breaking modes) DO
+        // match exactly in this same combination, and ALL 9 modes match
+        // correctly in the forward direction and whenever `raw` is
+        // itself from the week/day family (`resolved.largest == .week`).
+        // Extensive differential probing against real Node did not
+        // converge on the exact backward+half-mode algorithm in
+        // reasonable time; this is accepted, narrow, documented debt
+        // (see README's Scope section) rather than a silent gap.
         .week => {
             var total_days: i128 = @as(i128, raw.weeks) * 7 + raw.days;
             if (negate) total_days = -total_days;
@@ -232,6 +247,48 @@ pub fn roundDateDiff(start: iso_calendar.YearMonthDay, end: iso_calendar.YearMon
             return .{ .years = @intCast(rounded_total), .intermediate = c.intermediate };
         },
         else => unreachable,
+    }
+}
+
+/// `Duration.total`'s date-only fractional balance -- the float-returning
+/// counterpart to `roundDateDiff`'s per-unit numerator/denominator
+/// computation (same candidate/intermediate/denominator derivation, see
+/// its doc comment), but divides instead of rounding to an integer. Used
+/// only via `Duration.total(relativeTo, unit)`, where `start`/`end` are
+/// always a plain `relativeTo`/`relativeTo.add(duration)` pair (no time
+/// component -- `PlainDate` has none).
+pub fn totalUnitsBetween(start: iso_calendar.YearMonthDay, end: iso_calendar.YearMonthDay, unit: Unit) TemporalError!f64 {
+    const start_epoch = iso_calendar.toEpochDay(start.year, start.month, start.day);
+    const end_epoch = iso_calendar.toEpochDay(end.year, end.month, end.day);
+    const total_days_f: f64 = @floatFromInt(end_epoch - start_epoch);
+
+    switch (unit) {
+        .day => return total_days_f,
+        .week => return total_days_f / 7.0,
+        .month => {
+            const sign: i8 = if (end_epoch > start_epoch) 1 else if (end_epoch < start_epoch) -1 else 0;
+            if (sign == 0) return 0;
+            const raw = try diffISODate(start, end, .month);
+            const next = try stepCalendar(raw.intermediate, sign, false);
+            const denom: i128 = @abs(iso_calendar.toEpochDay(next.year, next.month, next.day) - iso_calendar.toEpochDay(raw.intermediate.year, raw.intermediate.month, raw.intermediate.day));
+            const months_f: f64 = @floatFromInt(raw.months);
+            const days_f: f64 = @floatFromInt(raw.days);
+            const denom_f: f64 = @floatFromInt(denom);
+            return months_f + days_f / denom_f;
+        },
+        .year => {
+            const sign: i8 = if (end_epoch > start_epoch) 1 else if (end_epoch < start_epoch) -1 else 0;
+            if (sign == 0) return 0;
+            const c = try calendarCandidate(start, end, true);
+            const c_intermediate_epoch = iso_calendar.toEpochDay(c.intermediate.year, c.intermediate.month, c.intermediate.day);
+            const next = try stepCalendar(c.intermediate, sign, true);
+            const denom: i128 = @abs(iso_calendar.toEpochDay(next.year, next.month, next.day) - c_intermediate_epoch);
+            const years_f: f64 = @floatFromInt(c.candidate);
+            const remaining_f: f64 = @floatFromInt(end_epoch - c_intermediate_epoch);
+            const denom_f: f64 = @floatFromInt(denom);
+            return years_f + remaining_f / denom_f;
+        },
+        else => return error.InvalidRange,
     }
 }
 
@@ -301,7 +358,7 @@ pub const PlainDate = struct {
         return self.add(d.negated(), overflow);
     }
 
-    fn asYMD(self: PlainDate) iso_calendar.YearMonthDay {
+    pub fn asYMD(self: PlainDate) iso_calendar.YearMonthDay {
         return .{ .year = self.iso_year, .month = self.iso_month, .day = self.iso_day };
     }
 

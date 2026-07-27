@@ -78,6 +78,40 @@ test "until: backward direction, flattened at minute/second largestUnit" {
     try expectIso("-PT16200S", try a.until(b, .{ .largest_unit = .second }));
 }
 
+test "round: default mode is halfExpand (opposite of until/since's trunc)" {
+    const t = try PlainTime.create(12, 34, 56, 789, 123, 456, .reject);
+    const r1 = try t.round(.{ .smallest_unit = .minute });
+    try std.testing.expectEqual(@as(u8, 12), r1.hour);
+    try std.testing.expectEqual(@as(u8, 35), r1.minute);
+    const r2 = try t.round(.{ .smallest_unit = .hour });
+    try std.testing.expectEqual(@as(u8, 13), r2.hour);
+}
+
+test "round: exact tie rounds via halfExpand, floor/ceil override" {
+    const t = try PlainTime.create(12, 30, 0, 0, 0, 0, .reject);
+    try std.testing.expectEqual(@as(u8, 13), (try t.round(.{ .smallest_unit = .hour })).hour);
+    try std.testing.expectEqual(@as(u8, 12), (try t.round(.{ .smallest_unit = .hour, .rounding_mode = .floor })).hour);
+    try std.testing.expectEqual(@as(u8, 13), (try t.round(.{ .smallest_unit = .hour, .rounding_mode = .ceil })).hour);
+}
+
+test "round: roundingIncrement groups, wraps mod-24h" {
+    const t = try PlainTime.create(12, 34, 0, 0, 0, 0, .reject);
+    const r = try t.round(.{ .smallest_unit = .minute, .rounding_increment = 15 });
+    try std.testing.expectEqual(@as(u8, 12), r.hour);
+    try std.testing.expectEqual(@as(u8, 30), r.minute);
+
+    const midnight_wrap = try PlainTime.create(23, 59, 30, 0, 0, 0, .reject);
+    const wrapped = try midnight_wrap.round(.{ .smallest_unit = .minute });
+    try std.testing.expectEqual(@as(u8, 0), wrapped.hour);
+    try std.testing.expectEqual(@as(u8, 0), wrapped.minute);
+}
+
+test "round: rejects missing smallestUnit and a date unit" {
+    const t = try PlainTime.create(1, 0, 0, 0, 0, 0, .reject);
+    try std.testing.expectError(error.InvalidRange, t.round(.{}));
+    try std.testing.expectError(error.InvalidRange, t.round(.{ .smallest_unit = .day }));
+}
+
 test "until: rejects a date unit (PlainTime has no date component)" {
     const a = try PlainTime.create(1, 0, 0, 0, 0, 0, .reject);
     const b = try PlainTime.create(5, 0, 0, 0, 0, 0, .reject);

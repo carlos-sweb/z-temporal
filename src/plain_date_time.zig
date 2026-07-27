@@ -203,6 +203,37 @@ pub const PlainDateTime = struct {
         return diffDateTime(self, other, resolved, options.rounding_increment, options.rounding_mode, true);
     }
 
+    /// Rounds to `options.smallest_unit` (required; restricted to time
+    /// units plus `.day` -- ground-truthed that real Temporal rejects
+    /// week/month/year here, unlike `until`/`since`). `.day` uses noon as
+    /// the tie point (fixed `NS_PER_DAY` denominator); any unit carries
+    /// the date forward one day on overflow, reusing the same epoch-day
+    /// shift `diffDateTime`'s date/time borrow already establishes.
+    pub fn round(self: PlainDateTime, options: rounding.RoundOptions) TemporalError!PlainDateTime {
+        const smallest = options.smallest_unit orelse return error.InvalidRange;
+        if (!rounding.isTimeUnitOrDay(smallest)) return error.InvalidRange;
+        try rounding.validateIncrement(smallest, options.rounding_increment);
+
+        const smallest_ns: i128 = if (smallest == .day) NS_PER_DAY else plain_time.nsPerUnit(smallest);
+        const rounded_units = rounding.roundRatioToIncrement(self.time.totalNanoseconds(), smallest_ns, options.rounding_increment, options.rounding_mode);
+        var rounded_ns: i128 = rounded_units * smallest_ns;
+
+        var day_carry: i64 = 0;
+        if (rounded_ns >= NS_PER_DAY) {
+            day_carry = 1;
+            rounded_ns -= NS_PER_DAY;
+        }
+        const ns_of_day: u64 = @intCast(rounded_ns);
+
+        const epoch_day = iso_calendar.toEpochDay(self.date.iso_year, self.date.iso_month, self.date.iso_day) + day_carry;
+        const ymd = iso_calendar.fromEpochDay(epoch_day);
+        if (!iso_calendar.isInRange(ymd.year, ymd.month, ymd.day)) return error.InvalidRange;
+        return .{
+            .date = .{ .iso_year = ymd.year, .iso_month = ymd.month, .iso_day = ymd.day },
+            .time = PlainTime.fromNanosecondsOfDay(ns_of_day),
+        };
+    }
+
     pub fn toPlainDate(self: PlainDateTime) PlainDate {
         return self.date;
     }
