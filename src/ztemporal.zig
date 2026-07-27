@@ -4,10 +4,11 @@
 //! non-calendar compare, ISO string parse/format). Phase 3a: add/subtract
 //! on the 3 Phase 1 types. Phase 3b: until/since on the 3 Phase 1 types,
 //! with the full rounding-mode framework (rounding.zig). Phase 3c
-//! (current, closes out "Phase 3: arithmetic"): round() on PlainTime/
-//! PlainDateTime, Duration.round()/.total(). See README.md's Scope
-//! section for the full phased roadmap and what's deliberately not here
-//! yet (including two narrow, documented Phase 3c gaps).
+//! (closes out "Phase 3: arithmetic"): round() on PlainTime/PlainDateTime,
+//! Duration.round()/.total(). Phase 4 (current): PlainYearMonth/
+//! PlainMonthDay. See README.md's Scope section for the full phased
+//! roadmap and what's deliberately not here yet (including two narrow,
+//! documented Phase 3c gaps).
 const std = @import("std");
 
 pub const iso_calendar = @import("iso_calendar.zig");
@@ -18,6 +19,8 @@ pub const TemporalError = errors.TemporalError;
 const plain_date = @import("plain_date.zig");
 const plain_time = @import("plain_time.zig");
 const plain_date_time = @import("plain_date_time.zig");
+const plain_year_month = @import("plain_year_month.zig");
+const plain_month_day = @import("plain_month_day.zig");
 const duration = @import("duration.zig");
 pub const duration_string = @import("duration_string.zig");
 const rounding = @import("rounding.zig");
@@ -26,6 +29,8 @@ pub const Overflow = plain_date.Overflow;
 pub const PlainDate = plain_date.PlainDate;
 pub const PlainTime = plain_time.PlainTime;
 pub const PlainDateTime = plain_date_time.PlainDateTime;
+pub const PlainYearMonth = plain_year_month.PlainYearMonth;
+pub const PlainMonthDay = plain_month_day.PlainMonthDay;
 pub const Duration = duration.Duration;
 pub const Unit = rounding.Unit;
 pub const RoundingMode = rounding.RoundingMode;

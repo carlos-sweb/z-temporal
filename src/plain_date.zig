@@ -12,6 +12,8 @@ const Duration = duration_mod.Duration;
 const rounding = @import("rounding.zig");
 const Unit = rounding.Unit;
 const RoundingOptions = rounding.RoundingOptions;
+const plain_year_month = @import("plain_year_month.zig");
+const plain_month_day = @import("plain_month_day.zig");
 
 /// `.from()`/`.with()`'s `overflow` option. Constructors always behave as
 /// `.reject` (there is no `overflow` option on `new Temporal.PlainDate`
@@ -405,6 +407,15 @@ pub const PlainDate = struct {
     pub fn calendarId(self: PlainDate) []const u8 {
         _ = self;
         return "iso8601";
+    }
+    pub fn toPlainYearMonth(self: PlainDate) plain_year_month.PlainYearMonth {
+        return .{ .iso_year = self.iso_year, .iso_month = self.iso_month };
+    }
+    /// Reference year is always 1972, regardless of `self`'s own year --
+    /// ground-truthed against real Node (`plain_month_day.zig`'s doc
+    /// comment has the full derivation).
+    pub fn toPlainMonthDay(self: PlainDate) plain_month_day.PlainMonthDay {
+        return .{ .iso_month = self.iso_month, .iso_day = self.iso_day, .reference_year = plain_month_day.REFERENCE_YEAR };
     }
     pub fn dayOfWeek(self: PlainDate) u8 {
         return iso_calendar.dayOfWeek(self.iso_year, self.iso_month, self.iso_day);

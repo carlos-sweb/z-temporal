@@ -197,6 +197,68 @@ pub fn parsePlainTime(s: []const u8) TemporalError!ParsedTime {
     return time;
 }
 
+pub const ParsedYearMonth = struct { year: i32, month: u8 };
+
+/// A PlainYearMonth string: `YYYY-MM`, or a full `YYYY-MM-DD[...]` string
+/// (the day, if present, is parsed and dropped -- ground-truthed:
+/// `PlainYearMonth.from("2024-02-15T10:00:00")` -> `2024-02`).
+pub fn parsePlainYearMonth(s: []const u8) TemporalError!ParsedYearMonth {
+    var pos: usize = 0;
+    const year = try parseSignedYear(s, &pos);
+    try expect(s, &pos, '-');
+    const month = try readNDigits(s, &pos, 2);
+    if (month < 1 or month > 12) return error.InvalidFormat;
+    if (pos < s.len and s[pos] == '-') {
+        pos += 1;
+        const day = try readNDigits(s, &pos, 2);
+        if (day < 1 or day > 31) return error.InvalidFormat;
+    }
+    if (pos < s.len and (s[pos] == 'T' or s[pos] == 't' or s[pos] == ' ')) {
+        pos += 1;
+        _ = try parseTimePart(s, &pos);
+        try skipOffset(s, &pos);
+    }
+    try skipAnnotations(s, &pos);
+    if (pos != s.len) return error.InvalidFormat;
+    return .{ .year = year, .month = @intCast(month) };
+}
+
+pub const ParsedMonthDay = struct { month: u8, day: u8 };
+
+/// A PlainMonthDay string: bare `MM-DD`, or a full `YYYY-MM-DD[...]`
+/// string (the year is parsed and dropped). Disambiguated the same way
+/// `parsePlainTime` disambiguates time-only vs date-time: a leading sign,
+/// or 4 digits followed by `-`, means "this is a full date string".
+pub fn parsePlainMonthDay(s: []const u8) TemporalError!ParsedMonthDay {
+    var pos: usize = 0;
+    const looks_like_full_date = (s.len > 0 and (s[0] == '+' or s[0] == '-')) or
+        (s.len >= 5 and isDigit(s[0]) and isDigit(s[1]) and isDigit(s[2]) and isDigit(s[3]) and s[4] == '-');
+    if (looks_like_full_date) {
+        const date = try parseDatePart(s, &pos);
+        if (pos < s.len and (s[pos] == 'T' or s[pos] == 't' or s[pos] == ' ')) {
+            pos += 1;
+            _ = try parseTimePart(s, &pos);
+            try skipOffset(s, &pos);
+        }
+        try skipAnnotations(s, &pos);
+        if (pos != s.len) return error.InvalidFormat;
+        return .{ .month = date.month, .day = date.day };
+    }
+    const month = try readNDigits(s, &pos, 2);
+    try expect(s, &pos, '-');
+    const day = try readNDigits(s, &pos, 2);
+    if (month < 1 or month > 12) return error.InvalidFormat;
+    if (day < 1 or day > 31) return error.InvalidFormat;
+    if (pos < s.len and (s[pos] == 'T' or s[pos] == 't' or s[pos] == ' ')) {
+        pos += 1;
+        _ = try parseTimePart(s, &pos);
+        try skipOffset(s, &pos);
+    }
+    try skipAnnotations(s, &pos);
+    if (pos != s.len) return error.InvalidFormat;
+    return .{ .month = @intCast(month), .day = @intCast(day) };
+}
+
 pub const ParsedDateTime = struct { date: ParsedDate, time: ParsedTime };
 
 /// A PlainDateTime string: date part, then an optional time part
