@@ -1,0 +1,14 @@
+.{
+    .name = .ztemporal,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.16.0",
+    .fingerprint = 0x337a7178fefc5ff6,
+    .description = "TC39 Temporal API (PlainDate/PlainTime/PlainDateTime/Duration/Instant/PlainYearMonth/PlainMonthDay/ZonedDateTime) implemented from scratch in pure Zig",
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src/",
+        "README.md",
+    },
+    .dependencies = .{},
+}
