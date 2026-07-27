@@ -7,7 +7,10 @@ The TC39 [Temporal](https://tc39.es/proposal-temporal/) API (calendar dates, wal
 
 ## Scope
 
-This is a large API, built in phases. **Phase 1 (current)** covers `PlainDate`/`PlainTime`/`PlainDateTime` construction, parsing/formatting, and field access — the ISO calendar only, no arithmetic yet.
+This is a large API, built in phases. **Phase 1** covers `PlainDate`/`PlainTime`/`PlainDateTime` construction, parsing/formatting, and field access — the ISO calendar only, no arithmetic yet. **Phase 2 (current)** adds `Duration`.
+
+**Supported (Phase 2):**
+- `Duration` (`years`/`months`/`weeks`/`days`/`hours`/`minutes`/`seconds`/`milliseconds`/`microseconds`/`nanoseconds`, all `i64`): `.create()`/`.parseIso()`/`.withFields()`, `.sign()`/`.blank()`/`.negated()`/`.abs()`, `.add()`/`.subtract()` (full integer balancing — ground-truthed that these never accept a years/months/weeks operand, regardless of `relativeTo`, so no calendar dependency at all here), `.compare()` (a fields-equal fast path, plus non-calendar-unit comparison by total nanoseconds — the calendar-ambiguous case needs `relativeTo`/`PlainDate` arithmetic and is `error.NeedsRelativeTo` until Phase 3), `.toIsoString()`/`.parseIso()` (full ISO 8601 duration grammar, including the fractional-designator cascade — `"PT1.5H"` → `{hours:1, minutes:30}` — and the display-time seconds/ms/µs/ns merge).
 
 **Supported (Phase 1):**
 - `PlainDate` (`iso_year`/`iso_month`/`iso_day`): `.create()`/`.parseIso()`/`.withFields()`, `.compare()`/`.equals()`, getters (`.year()`/`.month()`/`.day()`/`.monthCode()`/`.dayOfWeek()`/`.dayOfYear()`/`.daysInMonth()`/`.daysInYear()`/`.monthsInYear()`/`.inLeapYear()`/`.weekOfYear()`), `.toIsoString()`.
@@ -18,7 +21,9 @@ This is a large API, built in phases. **Phase 1 (current)** covers `PlainDate`/`
 - `.from()`/`.with()`-style `overflow` handling matches real Temporal exactly (ground-truthed against Node, not assumed): `PlainDate`'s month/day **lower bound always rejects** regardless of overflow mode (only the upper bound — month>12, day>daysInMonth — respects `constrain` vs `reject`); `PlainTime`'s fields clamp **symmetrically** on both bounds under `constrain`. Plain constructors always behave as `reject` (there is no `overflow` option on `new Temporal.PlainDate(...)` itself).
 
 **Explicitly NOT included yet** (later phases, tracked in the wider z-* engine project's roadmap, not oversights):
-- `Duration` and all arithmetic (`.add`/`.subtract`/`.until`/`.since`/`.round`/`.total`) on every type — needs `Duration` to exist first.
+- `Duration.round()`/`.total()` and `.toString()`'s rounding options (`smallestUnit`/`roundingMode`/`fractionalSecondDigits`) — need calendar-aware unit balancing via `relativeTo`, i.e. `PlainDate` arithmetic (Phase 3).
+- `.add()`/`.subtract()`/`.until()`/`.since()`/`.round()` on `PlainDate`/`PlainTime`/`PlainDateTime` themselves (Phase 3) — these consume/produce `Duration`, now available, but still need calendar day-counting.
+- `Duration`'s JS-object-protocol members (`toLocaleString`/`valueOf`/`Symbol.toStringTag`) and a property-bag `.from()` dispatcher — same JS-decoupling stance as `PlainDate` below.
 - `PlainYearMonth`/`PlainMonthDay`.
 - `Instant` (epoch nanoseconds) and `Temporal.Now`.
 - `ZonedDateTime` and real IANA timezone integration (`z-date`'s `tzdata.zig`/`PosixTz` parsing logic is the intended reuse target, but needs its process-global timezone model changed to a per-value one first).
@@ -30,8 +35,10 @@ This is a large API, built in phases. **Phase 1 (current)** covers `PlainDate`/`
 
 - `iso_calendar.zig`: `isLeapYear(year) bool`, `daysInMonth(year, month: 1-12) u8`, `daysInYear(year) u16`, `dayOfWeek(year,month,day) u8` (1=Mon..7=Sun), `dayOfYear(year,month,day) u16`, `weekOfYear(year,month,day) WeekOfYear{week,year}`, `toEpochDay`/`fromEpochDay`, `MIN_ISO_YEAR`/`MAX_ISO_YEAR`, `isInRange`.
 - `iso_string.zig`: `parsePlainDate`/`parsePlainTime`/`parsePlainDateTime(text) TemporalError!...`, `formatYear`/`formatFractionalSeconds` (shared formatting helpers).
-- `plain_date.zig` / `plain_time.zig` / `plain_date_time.zig`: the 3 public types.
-- `errors.zig`: `TemporalError{InvalidRange, InvalidFormat, InvalidField, OutOfMemory}` — plain Zig errors, no JS coupling.
+- `plain_date.zig` / `plain_time.zig` / `plain_date_time.zig`: the 3 Phase 1 types.
+- `duration.zig`: the `Duration` type — 10 `i64` fields, `IsValidDuration`-style validation (sign consistency, `2^32-1` per-calendar-field bound, `2^53*10^9-1` combined-time-part-nanoseconds bound — all 3 bounds reverse-engineered by bisection against real Node, not derived from spec text), `add`/`subtract`'s largest-unit-preserving balancing.
+- `duration_string.zig`: `Duration`'s own ISO 8601 grammar (materially different from `iso_string.zig`'s — sign only once at the front, integer-only date-part designators, a fraction only on the single last-present time designator, cascaded down into smaller units at parse time).
+- `errors.zig`: `TemporalError{InvalidRange, InvalidFormat, InvalidField, MixedCalendarUnits, NeedsRelativeTo, OutOfMemory}` — plain Zig errors, no JS coupling.
 
 ## A real Zig 0.16 `std.fmt` bug this library works around
 

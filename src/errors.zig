@@ -12,5 +12,14 @@ pub const TemporalError = error{
     /// A property bag is missing a required field, or has a field of the
     /// wrong type/shape (e.g. a non-integer where an integer is required).
     InvalidField,
+    /// `Duration.add`/`.subtract` with a calendar-unit (year/month/week)
+    /// operand -- unconditionally unsupported by real Temporal, regardless
+    /// of any `relativeTo`, not merely deferred.
+    MixedCalendarUnits,
+    /// `Duration.compare` between two durations that both carry calendar
+    /// units and aren't field-for-field equal -- resolvable only with a
+    /// `relativeTo` and calendar-aware balancing (`PlainDate` arithmetic,
+    /// a later phase), unlike `MixedCalendarUnits`.
+    NeedsRelativeTo,
     OutOfMemory,
 };
