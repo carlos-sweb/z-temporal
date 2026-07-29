@@ -456,6 +456,17 @@ fn timePartNanoseconds(days: i64, hours: i64, minutes: i64, seconds: i64, millis
 /// field AT `target_rank` absorbs everything larger than it instead of
 /// being further carried up (this is `add`/`subtract`'s balancing rule).
 fn fromNanosecondsAtRank(total_ns: i128, target_rank: u8) TemporalError!Duration {
+    // Bounds-checked up front: every `@intCast` below narrows a quotient
+    // or remainder of `remaining` into i64, and `remaining` only ever
+    // shrinks in magnitude (divided or remainder'd against a positive
+    // constant) from its starting value `total_ns` -- so one check here
+    // guarantees all of them are safe, including the final one at
+    // `target_rank == 6`, which skips every division and casts the raw,
+    // unreduced `total_ns` directly. Without this, an adversarial caller
+    // (found via a real Test262-driven crash after this repo got wired
+    // into z-interpreter, not a hypothetical) panics instead of getting
+    // a catchable error.
+    if (total_ns < std.math.minInt(i64) or total_ns > std.math.maxInt(i64)) return error.InvalidRange;
     var remaining = total_ns;
     var days: i64 = 0;
     var hours: i64 = 0;
