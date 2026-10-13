@@ -1,113 +1,132 @@
-# Z-TEMPORAL
+# Z-Temporal
 
-[![Zig Version](https://img.shields.io/badge/zig-0.16-orange.svg)](https://ziglang.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Zig](https://img.shields.io/badge/zig-0.17-orange.svg)](https://ziglang.org/)
 
-The TC39 [Temporal](https://tc39.es/proposal-temporal/) API (calendar dates, wall-clock times, and their combinations) implemented from scratch in pure Zig — part of the [z-*](https://github.com/carlos-sweb) micro-library ecosystem, and the natural successor to [`z-date`](https://github.com/carlos-sweb/z-date) (same domain: calendar/datetime math). Nothing JS-specific lives here (no `JSValue`, no engine coupling): a plain sibling library, reusable anywhere ISO calendar math is useful. Every result in this repo has been cross-checked against real Node.js's native `Temporal` implementation (Node 26+ ships it without a flag).
+A typed Zig implementation of the [TC39 Temporal API](https://tc39.es/proposal-temporal/). Public methods and options use JavaScript names: `from`, `with`, `toString`, `toJSON`, `smallestUnit`, `roundingMode`, and `relativeTo`.
 
-## Scope
+Version 0.1.0 changes the public API. See [MIGRATION.md](MIGRATION.md).
 
-This is a large API, built in phases. **Phase 1** covers `PlainDate`/`PlainTime`/`PlainDateTime` construction, parsing/formatting, and field access — the ISO calendar only, no arithmetic yet. **Phase 2** adds `Duration`. **Phase 3a** adds `.add()`/`.subtract()`. **Phase 3b** adds `.until()`/`.since()`. **Phase 3c** adds `.round()` on the Plain types and `Duration.round()`/`.total()`, closing out "Phase 3: arithmetic" entirely. **Phase 4** adds `PlainYearMonth`/`PlainMonthDay`. **Phase 5** adds `Instant`. **Phase 6** adds `Temporal.Now`, scoped to `Now.instant()`. **Phase 7a (current)** adds `ZonedDateTime` — construction, disambiguation/offset resolution, getters, conversions, string parse/format — plus, now that real IANA timezone data is wired in, the rest of `Temporal.Now`.
+## API documentation
 
-**Supported (Phase 7a):**
-- **The one architecture departure in this project so far**: every type through Phase 6 is a pure value needing at most an allocator for string formatting. `ZonedDateTime` needs real IANA timezone data — I/O to read `/usr/share/zoneinfo/...`, an allocator to parse the TZif transition table — so this repo gains its first dependency, [`z-date`](https://github.com/carlos-sweb/z-date) (`zdate.Timezone`, reused directly and per-call, never stored long-term), and every timezone-dependent `ZonedDateTime` method (`create`/`fromFields`/`parseIso`, every offset-dependent getter, the `toPlain*` family, `toIsoString`, `startOfDay`, `getTimeZoneTransition`) now takes an explicit `allocator: std.mem.Allocator, io: std.Io` pair. `toInstant`/`compare` stay pure (an exact instant needs no lookup).
-- `ZonedDateTime` (`epoch_nanoseconds: i128` + a fixed `[48]u8` time-zone-id buffer — the longest real IANA name, `America/Argentina/ComodRivadavia`, is 32 bytes, so this stays a plain, deinit-free value type like everything else here, never an owned/allocated slice): `.create()` (exact instant + zone, nothing to disambiguate), `.fromFields()` (wall-clock fields + zone + `overflow` + `disambiguation`), `.parseIso()` (+ `offsetOption` + `disambiguation`), `.toInstant()` (pure), `.toPlainDate()`/`.toPlainTime()`/`.toPlainDateTime()`/`.toPlainYearMonth()`/`.toPlainMonthDay()`, every field getter (`.year()`..`.nanosecond()`, `.dayOfWeek()`, `.offsetNanoseconds()`), `.timeZoneId()`/`.calendarId()` (pure), `.compare()` (instant only)/`.equals()` (instant **and** `timeZoneId` **and** `calendarId` — ground-truthed: same instant in `America/New_York` vs `UTC` compares equal but isn't `.equals()`), `.hoursInDay()` (DST-aware: 23/24/25, not a fixed 24), `.startOfDay()`, `.getTimeZoneTransition(.next | .previous)`, `.toIsoString()`.
-- **Disambiguation** (`compatible`/`earlier`/`later`/`reject`, default `compatible`) resolves a nonexistent (DST gap) or repeated (DST fold) wall-clock time to an instant. `.compatible` is reused directly from `zdate.Timezone.utcFromLocal` — ground-truthed byte-for-byte against real Node to already implement it correctly for both a gap (`2024-03-10T02:30` in `America/New_York` → `03:30-04:00`, skipping forward) and a fold (`2024-11-03T01:30` → the earlier `-04:00` occurrence). The other 3 modes probe the offset just before/after the wall-clock instant (mirroring `utcFromLocal`'s own technique internally) and pick the smaller (`earlier`) or larger (`later`) of the two resulting UTC candidates — ground-truthed this simple min/max rule holds uniformly across **both** a gap and a fold (only `.compatible` treats them asymmetrically). A wall-clock time that merely falls within a day of an unrelated transition, but isn't itself ambiguous, is detected separately (exactly one probed candidate is self-consistent) and returned directly — it must not fall into the gap/fold min/max logic, or a normal near-transition time would be misclassified as ambiguous.
-- **Offset option** (`use`/`prefer`/`ignore`/`reject`, default **`reject`** — a different default axis than `disambiguation`) governs conflicts between a numeric offset given in a parsed string and what the time zone actually says at that wall-clock time. Ground-truthed with a deliberately wrong offset (`America/New_York` is `-04:00` in June, string says `-03:00`): `reject` throws; `use` trusts the given offset literally; `ignore` always falls back to the time-zone's own rule (via `disambiguation`); `prefer` uses the given offset if it's actually a valid candidate at that wall-clock time (e.g. one side of a fold), otherwise falls back like `ignore`.
-- **Non-ISO calendar annotations are rejected** (`error.InvalidFormat`), diverging from `Instant`'s "accept and silently ignore" — ground-truthed that real Temporal's `ZonedDateTime` genuinely supports non-ISO calendars (`[u-ca=hebrew]` changes `.year`/`.month`/`.day` to real Hebrew-calendar values), so accepting-and-ignoring one here would compute iso8601 field values while claiming a different calendar, a real "silently wrong" trap `Instant` doesn't have (it has no date fields at all). Matches every Plain type's existing "reject non-`iso8601`" policy instead.
-- `Instant` gains `.toZonedDateTimeISO(allocator, io, time_zone_id)` (closes out the item deferred since Phase 5 — trivial, an exact instant needs no disambiguation). `Temporal.Now` gains `.zonedDateTimeISO()`/`.plainDateISO()`/`.plainTimeISO()`/`.plainDateTimeISO()` (all take an explicit `time_zone_id` — this repo's existing pattern of an explicit parameter over a JS-style "optional, defaults to system zone" argument) and `.timeZoneId(allocator, io, environ)` (the one function that actually detects the system's configured zone: `TZ` env var first if `environ` is given and names an IANA zone, else `/etc/localtime` resolved as a symlink into the zoneinfo directory).
-- `errors.zig` gains `InvalidTimeZone` (an unloadable `time_zone_id` — no such zoneinfo file, an unparseable TZif, or a name attempting to escape the zoneinfo directory) and `AmbiguousTime` (`disambiguation: "reject"` on a gap/fold, or `offsetOption: "reject"` — the default — on a mismatched offset).
+Browse the [Zig API docs](https://carlos-sweb.github.io/z-temporal/). GitHub Pages rebuilds them automatically on each push to `master`.
 
-**Supported (Phase 6):**
-- `Now.instant()` — the current wall-clock time as an `Instant`. Deliberately the *only* `Now` function implemented this phase: every other real `Temporal.Now` function (`timeZoneId`/`plainDateISO`/`plainTimeISO`/`plainDateTimeISO`/`zonedDateTimeISO`) needs a real local or named timezone offset to be non-misleading, and this repo has deferred real IANA timezone integration to `ZonedDateTime` since Phase 1 — implementing them as "always UTC" in the meantime would be silently wrong on any non-UTC system, which this project avoids throughout (e.g. rejecting non-`iso8601` calendar annotations outright rather than mishandling them). Ground-truthed that Zig 0.16's `std.time` has no timestamp function at all anymore (`nanoTimestamp`/`milliTimestamp` were removed; the replacement needs an `std.Io` instance) — uses the same raw Linux `clock_gettime` syscall this ecosystem's `z-interpreter`/`z-value` Date wiring already established as the answer to that exact gap, documented there as Linux-only "for now, like the dev setup."
+Generate the documentation locally with Zig 0.17.0:
 
-**Supported (Phase 5):**
-- `Instant` (`epoch_nanoseconds: i128`, exact time, zero calendar involvement): `.fromEpochMilliseconds()`/`.fromEpochNanoseconds()`/`.parseIso()`, `.epochMilliseconds()` (floors, doesn't truncate)/`.epochNanoseconds()`, `.compare()`/`.equals()`, `.add()`/`.subtract()`/`.until()`/`.since()`/`.round()`, `.toIsoString()` (always UTC `Z`). Range is exactly `±8_640_000_000_000_000_000_000` ns, matching `PlainDate`/`PlainDateTime`'s date-range boundaries almost exactly. Reuses `plain_time.zig`'s `decomposeTimeDiff`/`nsPerUnit` (Phase 3b) directly for `until`/`since` — no calendar complexity anywhere in this type. Several sharp, ground-truthed distinctions from every other type in this repo:
-  - `add`/`subtract` reject ANY nonzero `years`/`months`/`weeks`/`days` on the `Duration` operand — not just calendar units like `Duration.add` itself already does, but plain `days` too (`{days:1,hours:0}` throws). `until`/`since`/`round` are correspondingly restricted to hour..nanosecond units only — `day` is not even a fixed-24h fallback here, unlike `PlainDateTime`.
-  - `until`/`since`'s default `largestUnit` is `"second"` — the one place in this repo that differs from `PlainTime`'s own `"hour"` default, ground-truthed directly (needed its own `rounding.resolveInstantUnits`, not a reuse of `resolveTimeUnits`).
-  - `round`'s `roundingIncrement` cap is **inclusive** of the full cycle length (`hour: 24` succeeds, `25` is first rejected) — the opposite of `PlainTime`/`PlainDateTime.round`, where `24` itself is rejected, because `Instant` never wraps around a day the way a clock value does.
-  - `round`'s rounding mode is ground-truthed to apply to the **non-negative time-of-day remainder** after a floor-based day split, not to the raw (possibly negative) epoch value directly — confirmed via a negative epoch value where `trunc` and `floor` (and separately `expand` and `ceil`) gave identical results, which only makes sense once you see `trunc`/`expand` are being applied to an always-non-negative intermediate value (where they trivially coincide with `floor`/`ceil`), not the signed epoch total.
-  - `.parseIso()` **requires** an offset (`Z` or a signed, applied `±HH:MM[:SS[.fraction]]` — not just skipped like every other type's parser) and **never validates** a calendar annotation (`[u-ca=hebrew]` is silently accepted, unlike every Plain type here, which all reject non-`iso8601`).
-  - No `.with()` (a scalar has no fields to override). `toZonedDateTimeISO` needs `ZonedDateTime`, deferred with it.
+```sh
+zig build docs
+python3 -m http.server 8000 --directory zig-out/docs
+```
 
-**Supported (Phase 4):**
-- `PlainYearMonth` (`year`/`month`, plus the usual `monthCode`/`calendarId`/`daysInMonth`/`daysInYear`/`monthsInYear`/`inLeapYear` getters): `.create()`/`.parseIso()`/`.withFields()`, `.compare()`/`.equals()`, `.toIsoString()`. Ground-truthed to internally always use day = 1 as its reference day for every operation, regardless of what day (if any) is supplied at construction — so `.add()`/`.subtract()`/`.until()`/`.since()` are thin delegations to `PlainDate{year,month,1}`'s own machinery (Phase 3a/3b), not new algorithms; `.until()`/`.since()` are additionally restricted to `largestUnit`/`smallestUnit` of `year`/`month` only (week/day throw). `.toPlainDate(day)` **always constrains** the day regardless of any `overflow` option. No `.round()` (no sub-month granularity — doesn't exist on the real type either). The valid-range check is asymmetric at the boundaries: a year-month is valid if EITHER day 1 or the month's last day falls in the representable ISO range (not simply "day 1 in range"), ground-truthed at both ends (`-271821-04` valid, `-271821-03` not; `275760-09` valid, `275760-10` not).
-- `PlainMonthDay` (`monthCode`/`day`/`calendarId`): ground-truthed to have **no arithmetic at all** in real Temporal (`.add`/`.subtract`/`.until`/`.since`/`.compare`/`.round` are all absent) — just `.create()`/`.parseIso()`/`.withFields()`, `.equals()`, `.toPlainDate(year)` (always constrains), `.toIsoString()`. Carries a hidden reference ISO year, always **1972** (a leap year, so day 29 of February is always constructible) on every construction path this library exposes — ground-truthed that `.equals()` compares it too, and that `PlainDate.toPlainMonthDay()` uses 1972 unconditionally, never the source date's own year.
-- `PlainDate` gains `.toPlainYearMonth()`/`.toPlainMonthDay()` conversions (both simple field projections, the latter with the fixed 1972 reference year).
+Open `http://localhost:8000/`. The docs include the public types, signatures, source, and doc comments. Optional ICU APIs use the same signatures; enable them in your application with `-Dintl=true`.
 
-**Supported (Phase 3c):**
-- `PlainTime`/`PlainDateTime.round()`: rounds to a single `smallestUnit` (required — no default, unlike `until`/`since`). Default `roundingMode` is `halfExpand` here (the opposite of `until`/`since`'s `trunc` default). `PlainDateTime.round()` only accepts time units plus `"day"` — week/month/year are rejected (`PlainDate` has no `.round()` at all in real Temporal; dates are already atomic at day granularity).
-- `Duration.round()`/`.total()`: ground-truthed that `round()` with a `relativeTo` is exactly `relativeTo-at-midnight.until(relativeTo-at-midnight.add(duration), options)` — a thin composition over Phase 3a's `add` and Phase 3b's `until`, always anchored via `PlainDateTime` (never a bare `PlainDate`) since mixed calendar+time durations need `PlainDateTime`'s balance (e.g. `{years:1,hours:30}.round({smallestUnit:"hour"}, relativeTo)` → `P1Y1DT6H`). `relativeTo` (a `PlainDate` — `PlainDateTime`/`ZonedDateTime` relativeTo stay deferred with `ZonedDateTime` itself) is required whenever a year/month/week unit is **involved**, whether that's a field already on the duration or one of the requested units (ground-truthed: `{hours:100}.round({smallestUnit:"week"})` throws even though the duration itself has no calendar field, since weeks — unlike day and finer — aren't a fixed length relative to a calendar-free instant). `largestUnit`, when omitted, resolves to the coarser of the duration's own largest field and the requested `smallestUnit` (not a fixed per-type default). `.total()` always requires an explicit `unit` and returns a plain fractional `f64`, not a `Duration`.
-- **Known, documented gaps** (narrow, not silent — see the doc comments at `plain_date.zig`'s `roundDateDiff` `.week` branch and `duration.zig`'s `totalWithRelativeTo`):
-  - `smallestUnit:"week"` nested under a coarser `largestUnit` (`"month"`/`"year"`) with a **backward** direction: the 5 half-* rounding modes (`halfCeil`/`halfFloor`/`halfTrunc`/`halfExpand`/`halfEven`) don't always match real Temporal — `ceil`/`floor`/`trunc`/`expand` do match exactly in this same combination, and all 9 modes match correctly forward or when `largestUnit` is `"week"` itself. Extensive differential ground-truthing against real Node didn't converge on the exact algorithm for this narrow slice in reasonable time.
-  - `Duration.total()` with `unit:"month"`/`"year"` on a duration that mixes calendar units with a sub-day time component: the time component's contribution to the total is dropped (same "sub-day fraction ignored for month/year-sized rounding" simplification `until`/`since` already documents for `PlainDateTime`). `unit:"week"`/`"day"` are exact (fixed-length, fixed in this phase after a differential batch caught the gap).
+## Requirements
 
-**Supported (Phase 3b):**
-- `PlainDate`/`PlainTime`/`PlainDateTime.until()`/`.since()`, returning a `Duration`, with the full `largestUnit`/`smallestUnit`/`roundingIncrement`/`roundingMode` framework (all 9 real Temporal rounding modes: `ceil`/`floor`/`trunc`/`expand`/`halfCeil`/`halfFloor`/`halfTrunc`/`halfExpand`/`halfEven`; default `roundingMode` is `trunc`, not `halfExpand`). Ground-truthed, non-obvious behaviors (see `rounding.zig`/`plain_date.zig`'s doc comments for the full derivation):
-  - `since` is **not** "negate `until`'s rounded result" — the two disagree exactly at rounding ties. It's "negate the unrounded raw diff, then round the negated value with the same mode."
-  - The date-diff balance is **direction-dependent**: `a.until(b)` and `b.until(a)` are not simple negations of each other when a day-of-month clamp is involved (e.g. `2024-01-30` and `2024-03-01` give `P1M1D` one way, `-P1M2D` the other, not `-P1M1D`).
-  - `roundingIncrement` is uncapped for calendar units (year/month/week/day) but must evenly divide (and be less than) the fixed cycle length for time units (24 for hour, 60 for minute/second, 1000 for ms/us/ns).
-  - Rounding to a coarser calendar `smallestUnit` (month/year) uses a variable-length denominator — the length of the calendar unit **one step further in the direction of travel** past the balance's intermediate position, not the unit containing the intermediate position itself.
+- Zig 0.17.0.
+- IANA TZif files for named zones, normally `/usr/share/zoneinfo`.
+- Node 26.5.0 for the reproducible differential suite; normal Zig tests do not need Node.
+- ICU development libraries only when building with `-Dintl=true`. ISO calculations, fixed offsets, and named-zone Temporal algorithms remain in Zig.
 
-**Supported (Phase 3a):**
-- `PlainDate`/`PlainTime`/`PlainDateTime.add()`/`.subtract()` (consuming a `Duration`): years/months applied first (with `overflow` clamp/reject on the resulting day-of-month, default `"constrain"`), then weeks/days/time folded into a single epoch-day step. `PlainDate.add`'s duration-time-to-days conversion **truncates toward zero** (no existing time-of-day to combine with); `PlainDateTime.add` instead **floors** (must land in a canonical `[0,24h)` time-of-day) — both ground-truthed, not assumed, via targeted A/B cases against real Node. `PlainTime.add`/`.subtract` are pure mod-24h wraparound: no `overflow` parameter (nothing can overflow) and silently ignores any years/months/weeks/days on the duration (no date component to apply them to).
+The `z-date` dependency is pinned and fetched automatically. Returned strings belong to the supplied allocator. Temporal values themselves require no `deinit`.
 
-**Supported (Phase 2):**
-- `Duration` (`years`/`months`/`weeks`/`days`/`hours`/`minutes`/`seconds`/`milliseconds`/`microseconds`/`nanoseconds`, all `i64`): `.create()`/`.parseIso()`/`.withFields()`, `.sign()`/`.blank()`/`.negated()`/`.abs()`, `.add()`/`.subtract()` (full integer balancing — ground-truthed that these never accept a years/months/weeks operand, regardless of `relativeTo`, so no calendar dependency at all here), `.compare()` (a fields-equal fast path, plus non-calendar-unit comparison by total nanoseconds — the calendar-ambiguous case needs `relativeTo`/`PlainDate` arithmetic and is `error.NeedsRelativeTo` until a future phase), `.toIsoString()`/`.parseIso()` (full ISO 8601 duration grammar, including the fractional-designator cascade — `"PT1.5H"` → `{hours:1, minutes:30}` — and the display-time seconds/ms/µs/ns merge).
+## Using the API
 
-**Supported (Phase 1):**
-- `PlainDate` (`iso_year`/`iso_month`/`iso_day`): `.create()`/`.parseIso()`/`.withFields()`, `.compare()`/`.equals()`, getters (`.year()`/`.month()`/`.day()`/`.monthCode()`/`.dayOfWeek()`/`.dayOfYear()`/`.daysInMonth()`/`.daysInYear()`/`.monthsInYear()`/`.inLeapYear()`/`.weekOfYear()`), `.toIsoString()`.
-- `PlainTime` (`hour`/`minute`/`second`/`millisecond`/`microsecond`/`nanosecond`, nanosecond precision): `.create()`/`.parseIso()`/`.withFields()`, `.compare()`/`.equals()`, `.toIsoString()`.
-- `PlainDateTime` (a `PlainDate` + `PlainTime` pair): `.create()`/`.parseIso()`/`.withFields()`, `.toPlainDate()`/`.toPlainTime()`, `.compare()`/`.equals()`, `.toIsoString()`.
-- ISO 8601 calendar math (`iso_calendar.zig`, all independently usable): leap years, days-in-month/year, day-of-week (Temporal's 1=Monday..7=Sunday numbering), day-of-year, **ISO 8601 week numbering** (`weekOfYear`/`yearOfWeek`, including the year-boundary redirect — a date's ISO week-year can differ from its calendar year), epoch-day conversion.
-- ISO 8601 string grammar (`iso_string.zig`): the "extended" (separator-containing) format only — `YYYY-MM-DD`, `HH:MM[:SS[.fraction]]`, signed 6-digit extended years outside `[0,9999]`, calendar annotations (`[u-ca=iso8601]`, validated), timezone-name/offset annotations (parsed and discarded, a later phase's concern).
-- `.from()`/`.with()`-style `overflow` handling matches real Temporal exactly (ground-truthed against Node, not assumed): `PlainDate`'s month/day **lower bound always rejects** regardless of overflow mode (only the upper bound — month>12, day>daysInMonth — respects `constrain` vs `reject`); `PlainTime`'s fields clamp **symmetrically** on both bounds under `constrain`. Plain constructors always behave as `reject` (there is no `overflow` option on `new Temporal.PlainDate(...)` itself).
-
-**Explicitly NOT included yet** (later phases, tracked in the wider z-* engine project's roadmap, not oversights):
-- `.toString()`'s rounding options (`smallestUnit`/`roundingMode`/`fractionalSecondDigits`) on any type.
-- On `PlainDateTime.until()`/`.since()`/`.round()`: when `smallestUnit` is `"week"`/`"month"`/`"year"` *and* the two datetimes (or the duration/anchor pair, for `Duration.round`/`.total`) have different times-of-day, the sub-day time fraction isn't folded into the calendar-unit rounding decision (treated as negligible relative to a week/month/year-sized rounding) — a known simplification, not verified against test262's full boundary-tie coverage for this specific combination. See Phase 3c's notes above for the additional, narrower `smallestUnit:"week"`-under-`month`/`year`-backward gap.
-- `Duration`'s JS-object-protocol members (`toLocaleString`/`valueOf`/`Symbol.toStringTag`) and a property-bag `.from()` dispatcher — same JS-decoupling stance as `PlainDate` below.
-- The JS-level `calendarName` string option (`"always"`/`"never"`/`"auto"`) on any type's `toIsoString`-equivalent — this repo's existing `show_calendar: bool` param covers the same ground without a JS-shaped options object; `PlainMonthDay`'s reference-year-in-the-annotated-form behavior is still ground-truthed and implemented, just reached via the bool.
-- A real 4-argument `PlainMonthDay` constructor exposing a caller-chosen reference year (obscure, only meaningful for non-ISO calendar disambiguation this repo doesn't support) — every construction path here uses 1972 unconditionally.
-- `ZonedDateTime.with()`/`.withPlainTime()`/`.withTimeZone()`/`.withCalendar()`/`.add()`/`.subtract()` (Phase 7b) and `.until()`/`.since()`/`.round()` (Phase 7c) — each its own future phase, matching Phase 3's split precedent; Phase 7a covers construction/getters/conversions/string I/O only.
-- Non-ISO calendars (hebrew/chinese/islamic/japanese-eras/...) — `Temporal.Calendar`/`Temporal.TimeZone` as separate customizable objects don't exist in the current spec/test262 at all anymore (post-2024 simplification); only string identifiers do. A calendar annotation naming anything other than `"iso8601"` is a documented `error.InvalidFormat` for now, not silently wrong.
-- The separator-less ISO "basic" format (`20240229`) — genuinely ambiguous with `PlainMonthDay` per real spec (confirmed: `Temporal.PlainTime.from('0102')` throws in real Node too), out of scope until a real disambiguation pass is designed.
-- No JS/engine wiring at all (`z-value`/`z-interpreter`) — this repo only produces/consumes plain Zig values; a property bag / JS options object is a JS-level concept that belongs in the eventual wiring phase, the same way `z-buffer`/`z-bigint` stayed JS-decoupled until their own wiring phases.
-
-## Design
-
-- `iso_calendar.zig`: `isLeapYear(year) bool`, `daysInMonth(year, month: 1-12) u8`, `daysInYear(year) u16`, `dayOfWeek(year,month,day) u8` (1=Mon..7=Sun), `dayOfYear(year,month,day) u16`, `weekOfYear(year,month,day) WeekOfYear{week,year}`, `toEpochDay`/`fromEpochDay`, `MIN_ISO_YEAR`/`MAX_ISO_YEAR`, `isInRange`.
-- `iso_string.zig`: `parsePlainDate`/`parsePlainTime`/`parsePlainDateTime`/`parsePlainYearMonth`/`parsePlainMonthDay`/`parseInstant(text) TemporalError!...`, `formatYear`/`formatFractionalSeconds` (shared formatting helpers). `parseInstant` is the one parser that returns (rather than discards) its offset, and skips calendar annotations without validating them — every other parser here discards the offset and validates `u-ca=iso8601`.
-- `plain_date.zig` / `plain_time.zig` / `plain_date_time.zig`: the 3 Phase 1 types.
-- `plain_year_month.zig` / `plain_month_day.zig` (Phase 4): thin delegations to `plain_date.zig`'s already-built machinery, plus their own construction/parsing/formatting.
-- `instant.zig` (Phase 5): the `Instant` type — thin delegation to `plain_time.zig`'s `decomposeTimeDiff`/`nsPerUnit` for `until`/`since`/`round`, plus its own range validation, `add`/`subtract`, and string parse/format.
-- `now.zig` (Phase 6/7a): `Temporal.Now` — `instant()` (a raw `clock_gettime` syscall wrapped in `Instant.fromEpochNanoseconds`), plus (Phase 7a) `zonedDateTimeISO`/`plainDateISO`/`plainTimeISO`/`plainDateTimeISO`/`timeZoneId`, now that `zoned_date_time.zig` unblocks them.
-- `zoned_date_time.zig` (Phase 7a): the `ZonedDateTime` type — the shared disambiguation/offset-resolution helper (`resolveWallClock`), construction, getters/conversions (all going through `zdate.Timezone`, loaded and `.deinit()`'d per call), string parse/format.
-- `duration.zig`: the `Duration` type — 10 `i64` fields, `IsValidDuration`-style validation (sign consistency, `2^32-1` per-calendar-field bound, `2^53*10^9-1` combined-time-part-nanoseconds bound — all 3 bounds reverse-engineered by bisection against real Node, not derived from spec text), `add`/`subtract`'s largest-unit-preserving balancing, `round`/`.total` (Phase 3c — composes `PlainDateTime.add`/`.until` when `relativeTo` is involved, falls back to pure fixed-radix nanosecond math otherwise).
-- `duration_string.zig`: `Duration`'s own ISO 8601 grammar (materially different from `iso_string.zig`'s — sign only once at the front, integer-only date-part designators, a fraction only on the single last-present time designator, cascaded down into smaller units at parse time).
-- `rounding.zig`: the shared rounding-mode framework — `Unit` (all 10, ranked), `RoundingMode` (all 9), `RoundingOptions` (default `roundingMode: .trunc`, used by `until`/`since`), `RoundOptions` (same shape but default `roundingMode: .half_expand`, used by the `round()` family — a plain Zig struct default can't tell "explicitly passed `.trunc`" from "left it defaulted", hence two types), `roundRatioToIncrement` (the one generic integer-only rational-rounding primitive every caller in this phase funnels through), `validateIncrement`, and per-type unit-range resolution (`resolveDateUnits`/`resolveTimeUnits`/`resolveDateTimeUnits`).
-- `errors.zig`: `TemporalError{InvalidRange, InvalidFormat, InvalidField, MixedCalendarUnits, NeedsRelativeTo, InvalidTimeZone, AmbiguousTime, OutOfMemory}` — plain Zig errors, no JS coupling.
-
-## A real Zig 0.16 `std.fmt` bug this library works around
-
-Same one `z-date`'s `formatting.zig` documents: `std.fmt`'s zero-width-padded placeholder (`{d:0>N}`) prepends a spurious `+` to a *signed* integer even when its value is non-negative. `formatYear`'s 4-digit branch casts to `u32` before formatting instead of formatting the `i32` year directly — caught immediately by this repo's own Node cross-check tests (`"2024"` vs the wrongly-produced `"+2024"`). The identical bug resurfaced in `zoned_date_time.zig`'s `toIsoString` offset formatting (`±HH:MM`) and was fixed the same way: derive the magnitude as `u32` before handing it to `{d:0>2}`.
-
-## A real Zig 0.16 footgun this library works around
-
-Returning a slice that borrows from a **by-value** struct parameter is unsafe in Zig even within the same statement that uses it — the parameter is effectively a temporary copy, and its storage can be reused by the very next function call (observed here as a following `std.debug.print`/`std.fmt.bufPrint` call silently corrupting the previously-returned string). `ZonedDateTime.timeZoneId()` originally took `self: ZonedDateTime` (by value) and returned `self.time_zone_buf[0..self.time_zone_len]`; every caller intermittently got back garbage. Fixed by making it take `self: *const ZonedDateTime` instead — every call site already had an addressable `ZonedDateTime` lvalue, so this was a pure signature fix, no call-site changes needed.
-
-## Usage
+`init` corresponds to a JavaScript constructor and rejects invalid fields. `from` accepts a tagged string, value, or fields input. Field construction defaults to `overflow: .constrain`; string parsing rejects invalid dates independently of overflow. `with` accepts a partial field struct and options.
 
 ```zig
-const ztemporal = @import("ztemporal");
-const PlainDate = ztemporal.PlainDate;
+const std = @import("std");
+const Temporal = @import("ztemporal");
 
-const d = try PlainDate.create(2024, 2, 29, .reject);
-std.debug.print("{d}\n", .{d.dayOfWeek()}); // 4 (Thursday)
-
-const allocator = ...;
-const s = try d.toIsoString(allocator, false); // "2024-02-29"
-defer allocator.free(s);
-
-const parsed = try PlainDate.parseIso("2024-02-29[u-ca=iso8601]");
+test "date construction and arithmetic" {
+    const date = try Temporal.PlainDate.from(.{ .fields = .{
+        .year = 2024, .monthCode = "M02", .day = 29,
+    } }, .{});
+    const changed = try date.with(.{ .month = 3 }, .{});
+    const next = try changed.add(.{ .days = 1 }, .constrain);
+    const text = try next.toString(std.testing.allocator, .{});
+    defer std.testing.allocator.free(text);
+    try std.testing.expectEqualStrings("2024-03-30", text);
+}
 ```
+
+Timezone-dependent operations take an allocator and `std.Io` explicitly. Date units follow the local calendar; time units advance the exact instant.
+
+```zig
+const std = @import("std");
+const Temporal = @import("ztemporal");
+
+test "one calendar day differs from 24 hours" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const start = try Temporal.ZonedDateTime.from(allocator, io,
+        .{ .string = "2024-03-09T12:00[America/New_York]" }, .{});
+    const next = try start.add(allocator, io, .{ .days = 1 }, .constrain);
+    const elapsed = try start.until(allocator, io, next, .{ .largestUnit = .hour });
+    try std.testing.expectEqual(@as(f64, 23), elapsed.hours);
+}
+```
+
+## API coverage
+
+| Type | Operations |
+| --- | --- |
+| `Instant` | `init`, `from`, `fromEpochMilliseconds`, `fromEpochNanoseconds`, epoch getters, `compare`, `equals`, `add`, `subtract`, `until`, `since`, `round`, `toZonedDateTimeISO` |
+| `PlainDate` | `init`, `from`, `with`, `withCalendar`, getters, `compare`, `equals`, `add`, `subtract`, `until`, `since`, conversions to date-time, zoned date-time, year-month, and month-day |
+| `PlainTime` | `init`, `from`, `with`, time fields, `compare`, `equals`, `add`, `subtract`, `until`, `since`, `round` |
+| `PlainDateTime` | `init`, `from`, `with`, `withPlainTime`, `withCalendar`, getters, comparisons, arithmetic, differences, `round`, Plain conversions and `toZonedDateTime` |
+| `PlainYearMonth` | `init`, `from`, `with`, getters, `compare`, `equals`, arithmetic, differences and `toPlainDate` |
+| `PlainMonthDay` | `init`, `from`, `with`, getters, `equals` and `toPlainDate`; Temporal defines no arithmetic or ordering for this type |
+| `Duration` | `init`, `from`, `with`, fields, `sign`, `blank`, `negated`, `abs`, `compare`, `add`, `subtract`, `round`, `total` |
+| `ZonedDateTime` | construction, `with`, `withPlainTime`, `withTimeZone`, `withCalendar`, getters, comparisons, arithmetic, differences, `round`, Plain conversions, `toInstant`, `startOfDay`, `hoursInDay`, `getTimeZoneTransition` |
+| `Now` | `instant`, `timeZoneId`, `zonedDateTimeISO`, `plainDateTimeISO`, `plainDateISO`, `plainTimeISO` |
+
+Every value type exposes `toString`, `toJSON`, and optional-ICU `toLocaleString`. Getters are methods where Zig allows them; `PlainTime` and `Duration` components are fields. `compare` returns `std.math.Order`, corresponding to JavaScript's -1/0/1.
+
+`PlainYearMonth.init(year, month, calendar, referenceISODay)` and `PlainMonthDay.init(month, day, calendar, referenceISOYear)` accept `null` for their constructor defaults. PlainDate, PlainDateTime, and ZonedDateTime constructors also take an optional final calendar argument; pass `null` for ISO. Constructor date fields describe the underlying ISO date, as in JavaScript. `from` normalizes reference dates according to its own rules.
+
+`StringOptions` provides `smallestUnit`, `fractionalSecondDigits`, `roundingMode`, `calendarName`, `timeZoneName`, `offset`, and an optional output `timeZone` for `Instant`. Supply `io` in these options when an Instant's output zone requires lookup. `null` represents the automatic precision/default largest unit; enum options are typed instead of accepting arbitrary strings.
+
+`Duration.compare`, `round`, and `total` accept options with a tagged `relativeTo`: `.plainDate`, `.plainDateTime`, or `.zonedDateTime`. A plain date-time reference follows Temporal's date-only interpretation. For a zoned reference, include `allocator` and `io` in the options. Duration fields use `f64` to reproduce JavaScript Number conversion and precision; Instant nanoseconds remain exact `i128`.
+
+## Calendars and localization
+
+With `-Dintl=true`, field construction and calendar annotations support `buddhist`, `chinese`, `coptic`, `dangi`, `ethioaa`, `ethiopic`, `gregory`, `hebrew`, `indian`, `islamic-civil`, `islamic-tbla`, `islamic-umalqura`, `japanese`, `persian`, `roc`, and `iso8601`. Generic `islamic` and `islamic-rgsa` are rejected, matching the reference Node version.
+
+Calendar-aware fields include `calendar`, `monthCode`, and paired `era`/`eraYear` where applicable. Calendar data is cached in values when constructed, so getters do not allocate. Month codes need a `[4]u8` buffer to include leap codes such as `M05L`. Week-number getters return optional values; non-ISO calendars have no ISO week number.
+
+`toLocaleString` uses a locale string (or `null` for `en-US`) and typed `LocaleOptions`. Date/time options cover calendar, time zone, date/time styles, year/month/day/weekday/era, time components, fractional seconds, and hour cycle. Duration localization uses `DurationLocaleOptions` with `long`, `short`, `narrow`, or `digital` style. Localized output depends on ICU/CLDR versions.
+
+Without ICU, non-ISO calendars produce `RangeError` and localized formatting produces `TypeError`; ISO serialization continues to work. This is an explicit build capability boundary.
+
+## Errors
+
+Semantic failures use `error.RangeError` or `error.TypeError`, selected by the corresponding Temporal operation. Parsing errors are `RangeError`, not `SyntaxError`. Missing required fields and empty `with` inputs produce `TypeError` where required by the specification. Allocation and host-data failures remain `OutOfMemory` and `IoError`.
+
+Error messages and JavaScript stack traces are outside the typed Zig API. Construct values through public constructors and operations; direct mutation of representation fields bypasses invariants.
+
+## Verification
+
+```sh
+zig build test
+zig build test -Doptimize=safe
+zig build test-parity
+zig build test -Dintl=true
+zig build test-parity -Dintl=true
+zig fmt --check build.zig src tests
+```
+
+`test-parity` runs a deterministic catalog against native Node Temporal and compares serialized results, duration components, getters, numeric totals, and exception names. The catalog covers grammar, all nine rounding modes, backward differences, calendar fractions, Number precision, DST and fixed zones, calendar reference dates, and optional ICU calendars/localization. README examples are compiled as tests.
+
+For the exact reference data versions:
+
+```sh
+bash scripts/setup-parity-data.sh
+zig build test-parity -Dintl=true \
+  -Dicu-prefix="$PWD/.zig-cache/parity-data/icu/usr/local" \
+  -Dtzdata-dir="$PWD/.zig-cache/parity-data/zoneinfo"
+```
+
+`-Dicu-prefix` selects ICU headers and libraries together. `-Dtzdata-dir` selects an absolute TZif database path; keep the selected database immutable while values are in use. CI pins Node 26.5.0, ICU 78.3, and tzdata 2026b. The catalog is regression coverage, not a claim that every test262 case has been ported.
+
+## JavaScript runtime boundary
+
+This library supplies Temporal values and algorithms. A JavaScript engine adapter must supply prototypes, symbols, property access/getters, receiver-brand checks, coercions, arbitrary property bags, locale-list negotiation, and JavaScript exceptions. These are intentionally excluded from the typed API and from its parity catalog.

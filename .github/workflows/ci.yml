@@ -1,0 +1,29 @@
+name: Temporal conformance
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26.5.0
+      - name: Pin ICU and timezone data
+        run: bash scripts/setup-parity-data.sh
+      - name: Check formatting
+        run: zig fmt --check build.zig src tests
+      - name: ISO tests and Node comparison
+        run: |
+          zig build test
+          zig build test -Doptimize=safe
+          zig build test-parity -Dtzdata-dir="$PWD/.zig-cache/parity-data/zoneinfo"
+      - name: ICU tests and Node comparison
+        run: |
+          zig build test -Dintl=true -Dicu-prefix="$PWD/.zig-cache/parity-data/icu/usr/local" -Dtzdata-dir="$PWD/.zig-cache/parity-data/zoneinfo"
+          zig build test -Dintl=true -Doptimize=safe -Dicu-prefix="$PWD/.zig-cache/parity-data/icu/usr/local" -Dtzdata-dir="$PWD/.zig-cache/parity-data/zoneinfo"
+          zig build test-parity -Dintl=true -Dicu-prefix="$PWD/.zig-cache/parity-data/icu/usr/local" -Dtzdata-dir="$PWD/.zig-cache/parity-data/zoneinfo"

@@ -1,0 +1,44 @@
+name: Zig API docs
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+      - uses: actions/configure-pages@v5
+      - name: Generate Zig API docs
+        run: zig build docs
+      - name: Verify generated entry point
+        run: test -s zig-out/docs/index.html && test -s zig-out/docs/main.wasm
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: zig-out/docs
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy API docs
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,19 +1,4 @@
-//! `z-temporal` -- the TC39 Temporal API implemented from scratch in pure
-//! Zig. Phase 1: PlainDate/PlainTime/PlainDateTime, ISO calendar only, no
-//! arithmetic. Phase 2: Duration (construction/validation, add/subtract,
-//! non-calendar compare, ISO string parse/format). Phase 3a: add/subtract
-//! on the 3 Phase 1 types. Phase 3b: until/since on the 3 Phase 1 types,
-//! with the full rounding-mode framework (rounding.zig). Phase 3c
-//! (closes out "Phase 3: arithmetic"): round() on PlainTime/PlainDateTime,
-//! Duration.round()/.total(). Phase 4: PlainYearMonth/PlainMonthDay.
-//! Phase 5: Instant. Phase 6: Temporal.Now, scoped to `Now.instant()`.
-//! Phase 7a (current): ZonedDateTime -- construction, disambiguation/
-//! offset resolution, getters, conversions, string I/O (this repo's
-//! first type needing real I/O: reads IANA tzdata via the new `z-date`
-//! dependency). See README.md's Scope section for the full phased
-//! roadmap and what's deliberately not here yet (including two narrow,
-//! documented Phase 3c gaps, and Phase 7b/7c's still-deferred
-//! ZonedDateTime arithmetic/until/since/round).
+//! Typed TC39 Temporal values, algorithms, and optional ICU calendar/localization support.
 const std = @import("std");
 
 pub const iso_calendar = @import("iso_calendar.zig");
@@ -52,3 +37,14 @@ pub const RoundOptions = rounding.RoundOptions;
 test {
     std.testing.refAllDecls(@This());
 }
+
+pub const StringOptions = @import("format_options.zig").StringOptions;
+pub const CalendarName = @import("format_options.zig").CalendarName;
+pub const TimeZoneName = @import("format_options.zig").TimeZoneName;
+
+pub const LocaleOptions = @import("locale.zig").LocaleOptions;
+pub const intlEnabled = @import("build_options").intl;
+
+pub const DurationLocaleOptions = @import("locale.zig").DurationLocaleOptions;
+
+pub const intlDataVersion = @import("locale.zig").dataVersion;

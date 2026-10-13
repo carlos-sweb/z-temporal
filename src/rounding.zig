@@ -9,39 +9,39 @@ const std = @import("std");
 const errors = @import("errors.zig");
 const TemporalError = errors.TemporalError;
 
-/// Declaration order doubles as rank (coarsest first) for `@intFromEnum`
+/// Declaration order doubles as rank (coarsest first) for `@backingInt`
 /// comparisons -- `year` is rank 0, `nanosecond` is rank 9.
 pub const Unit = enum { year, month, week, day, hour, minute, second, millisecond, microsecond, nanosecond };
 
-pub const RoundingMode = enum { ceil, floor, trunc, expand, half_ceil, half_floor, half_trunc, half_expand, half_even };
+pub const RoundingMode = enum { ceil, floor, trunc, expand, halfCeil, halfFloor, halfTrunc, halfExpand, halfEven };
 
 pub const RoundingOptions = struct {
-    largest_unit: ?Unit = null,
-    smallest_unit: ?Unit = null,
-    rounding_increment: u32 = 1,
-    rounding_mode: RoundingMode = .trunc,
+    largestUnit: ?Unit = null,
+    smallestUnit: ?Unit = null,
+    roundingIncrement: u32 = 1,
+    roundingMode: RoundingMode = .trunc,
 };
 
 /// Used by the `round()` family (`PlainTime`/`PlainDateTime.round`,
 /// `Duration.round`) instead of `RoundingOptions` -- same shape, but the
-/// default `rounding_mode` is `.half_expand`, not `.trunc` (ground-truthed:
+/// default `roundingMode` is `.halfExpand`, not `.trunc` (ground-truthed:
 /// real Temporal's `round()`/`.total()` default is the opposite of
 /// `until`/`since`'s). A plain struct default can't distinguish "caller
 /// explicitly passed `.trunc`" from "left it defaulted", so this is a
 /// separate type rather than a shared one with a mutable default.
 pub const RoundOptions = struct {
-    largest_unit: ?Unit = null,
-    smallest_unit: ?Unit = null,
-    rounding_increment: u32 = 1,
-    rounding_mode: RoundingMode = .half_expand,
+    largestUnit: ?Unit = null,
+    smallestUnit: ?Unit = null,
+    roundingIncrement: u32 = 1,
+    roundingMode: RoundingMode = .halfExpand,
 };
 
 pub fn isDateUnit(unit: Unit) bool {
-    return @intFromEnum(unit) <= @intFromEnum(Unit.day);
+    return @backingInt(unit) <= @backingInt(Unit.day);
 }
 
 pub fn isTimeUnit(unit: Unit) bool {
-    return @intFromEnum(unit) >= @intFromEnum(Unit.hour);
+    return @backingInt(unit) >= @backingInt(Unit.hour);
 }
 
 /// `PlainDateTime.round`'s allowed `smallestUnit` range: time units plus
@@ -67,10 +67,10 @@ fn cycleLength(unit: Unit) ?u32 {
 }
 
 pub fn validateIncrement(unit: Unit, increment: u32) TemporalError!void {
-    if (increment < 1) return error.InvalidRange;
+    if (increment < 1 or increment > 1_000_000_000) return error.RangeError;
     if (cycleLength(unit)) |cycle| {
-        if (increment >= cycle) return error.InvalidRange;
-        if (cycle % increment != 0) return error.InvalidRange;
+        if (increment >= cycle) return error.RangeError;
+        if (cycle % increment != 0) return error.RangeError;
     }
 }
 
@@ -81,21 +81,21 @@ pub fn validateIncrement(unit: Unit, increment: u32) TemporalError!void {
 /// rejected value), where `PlainTime`/`PlainDateTime.round` reject `24`
 /// itself. Used only by `Instant.round`.
 pub fn validateIncrementInclusive(unit: Unit, increment: u32) TemporalError!void {
-    if (increment < 1) return error.InvalidRange;
+    if (increment < 1 or increment > 1_000_000_000) return error.RangeError;
     if (cycleLength(unit)) |cycle| {
-        if (increment > cycle) return error.InvalidRange;
-        if (cycle % increment != 0) return error.InvalidRange;
+        if (increment > cycle) return error.RangeError;
+        if (cycle % increment != 0) return error.RangeError;
     }
 }
 
 pub const ResolvedUnits = struct { largest: Unit, smallest: Unit };
 
 fn resolveUnits(options: RoundingOptions, default_largest: Unit, default_smallest: Unit, comptime allowed: fn (Unit) bool) TemporalError!ResolvedUnits {
-    const largest = options.largest_unit orelse default_largest;
-    const smallest = options.smallest_unit orelse default_smallest;
-    if (!allowed(largest) or !allowed(smallest)) return error.InvalidRange;
-    if (@intFromEnum(largest) > @intFromEnum(smallest)) return error.InvalidRange;
-    try validateIncrement(smallest, options.rounding_increment);
+    const largest = options.largestUnit orelse if (options.smallestUnit) |smallest| (if (@backingInt(smallest) < @backingInt(default_largest)) smallest else default_largest) else default_largest;
+    const smallest = options.smallestUnit orelse default_smallest;
+    if (!allowed(largest) or !allowed(smallest)) return error.RangeError;
+    if (@backingInt(largest) > @backingInt(smallest)) return error.RangeError;
+    try validateIncrement(smallest, options.roundingIncrement);
     return .{ .largest = largest, .smallest = smallest };
 }
 
@@ -158,27 +158,27 @@ pub fn roundRatioToIncrement(numerator: i128, denominator: i128, increment: i128
         .expand => {
             if (!is_negative and r > 0) q += 1;
         },
-        .half_floor => {
+        .halfFloor => {
             if (twice_r > combined_denom) q += 1;
         },
-        .half_ceil => {
+        .halfCeil => {
             if (twice_r >= combined_denom and r > 0) q += 1;
         },
-        .half_trunc => {
+        .halfTrunc => {
             if (is_negative) {
                 if (twice_r >= combined_denom and r > 0) q += 1;
             } else {
                 if (twice_r > combined_denom) q += 1;
             }
         },
-        .half_expand => {
+        .halfExpand => {
             if (!is_negative) {
                 if (twice_r >= combined_denom and r > 0) q += 1;
             } else {
                 if (twice_r > combined_denom) q += 1;
             }
         },
-        .half_even => {
+        .halfEven => {
             if (twice_r > combined_denom) {
                 q += 1;
             } else if (twice_r == combined_denom and @mod(q, 2) != 0) {
@@ -198,11 +198,11 @@ test "roundRatioToIncrement: exact 12h/24h tie, all 9 modes, both directions" {
         .{ .mode = .floor, .until_q = 0, .since_q = -1 },
         .{ .mode = .trunc, .until_q = 0, .since_q = 0 },
         .{ .mode = .expand, .until_q = 1, .since_q = -1 },
-        .{ .mode = .half_ceil, .until_q = 1, .since_q = 0 },
-        .{ .mode = .half_floor, .until_q = 0, .since_q = -1 },
-        .{ .mode = .half_trunc, .until_q = 0, .since_q = 0 },
-        .{ .mode = .half_expand, .until_q = 1, .since_q = -1 },
-        .{ .mode = .half_even, .until_q = 0, .since_q = 0 },
+        .{ .mode = .halfCeil, .until_q = 1, .since_q = 0 },
+        .{ .mode = .halfFloor, .until_q = 0, .since_q = -1 },
+        .{ .mode = .halfTrunc, .until_q = 0, .since_q = 0 },
+        .{ .mode = .halfExpand, .until_q = 1, .since_q = -1 },
+        .{ .mode = .halfEven, .until_q = 0, .since_q = 0 },
     };
     for (cases) |c| {
         try std.testing.expectEqual(c.until_q, roundRatioToIncrement(12, denom, 1, c.mode));
@@ -212,7 +212,7 @@ test "roundRatioToIncrement: exact 12h/24h tie, all 9 modes, both directions" {
 
 test "roundRatioToIncrement: non-tie values round to nearest regardless of mode" {
     // 15/24 ~ 0.625, unambiguously nearer to 1 than 0.
-    inline for (.{ RoundingMode.half_ceil, .half_floor, .half_trunc, .half_expand, .half_even }) |mode| {
+    inline for (.{ RoundingMode.halfCeil, .halfFloor, .halfTrunc, .halfExpand, .halfEven }) |mode| {
         try std.testing.expectEqual(@as(i128, 1), roundRatioToIncrement(15, 24, 1, mode));
     }
 }
@@ -220,14 +220,14 @@ test "roundRatioToIncrement: non-tie values round to nearest regardless of mode"
 test "roundRatioToIncrement: increment grouping" {
     // 44/29 with increment 1 in months ~ 1.517 -> halfExpand rounds to 2;
     // ground-truthed against the `since halfExpand -> P2M` Node case.
-    try std.testing.expectEqual(@as(i128, 2), roundRatioToIncrement(44, 29, 1, .half_expand));
-    try std.testing.expectEqual(@as(i128, -2), roundRatioToIncrement(-44, 29, 1, .half_expand));
+    try std.testing.expectEqual(@as(i128, 2), roundRatioToIncrement(44, 29, 1, .halfExpand));
+    try std.testing.expectEqual(@as(i128, -2), roundRatioToIncrement(-44, 29, 1, .halfExpand));
 }
 
 test "validateIncrement: time units capped+divisible, calendar units uncapped" {
     try validateIncrement(.hour, 12);
-    try std.testing.expectError(error.InvalidRange, validateIncrement(.hour, 24));
-    try std.testing.expectError(error.InvalidRange, validateIncrement(.hour, 23));
+    try std.testing.expectError(error.RangeError, validateIncrement(.hour, 24));
+    try std.testing.expectError(error.RangeError, validateIncrement(.hour, 23));
     try validateIncrement(.month, 5);
     try validateIncrement(.week, 3);
     try validateIncrement(.day, 999_999_999);
@@ -237,6 +237,14 @@ test "resolveDateUnits: defaults, unit-group rejection, largest<smallest rejecti
     const r = try resolveDateUnits(.{});
     try std.testing.expectEqual(Unit.day, r.largest);
     try std.testing.expectEqual(Unit.day, r.smallest);
-    try std.testing.expectError(error.InvalidRange, resolveDateUnits(.{ .largest_unit = .hour }));
-    try std.testing.expectError(error.InvalidRange, resolveDateUnits(.{ .largest_unit = .month, .smallest_unit = .year }));
+    try std.testing.expectError(error.RangeError, resolveDateUnits(.{ .largestUnit = .hour }));
+    try std.testing.expectError(error.RangeError, resolveDateUnits(.{ .largestUnit = .month, .smallestUnit = .year }));
+}
+
+pub fn resolveTimeUnitsForZoned(options: RoundingOptions) TemporalError!ResolvedUnits {
+    return resolveUnits(options, .hour, .nanosecond, struct {
+        fn allow(_: Unit) bool {
+            return true;
+        }
+    }.allow);
 }

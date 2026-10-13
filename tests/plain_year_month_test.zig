@@ -4,8 +4,8 @@ const PlainYearMonth = ztemporal.PlainYearMonth;
 const PlainDate = ztemporal.PlainDate;
 const Duration = ztemporal.Duration;
 
-test "public API: create, compare, toIsoString round-trip" {
-    const ym = try PlainYearMonth.create(2024, 2, .reject);
+test "public API: init, compare, toString round-trip" {
+    const ym = try PlainYearMonth.init(2024, 2, null, null);
     try std.testing.expectEqual(@as(i32, 2024), ym.year());
     try std.testing.expectEqual(@as(u8, 2), ym.month());
     try std.testing.expectEqual(@as(u8, 29), ym.daysInMonth());
@@ -13,51 +13,51 @@ test "public API: create, compare, toIsoString round-trip" {
     try std.testing.expect(ym.inLeapYear());
 
     const allocator = std.testing.allocator;
-    const s = try ym.toIsoString(allocator, false);
+    const s = try ym.toString(allocator, .{});
     defer allocator.free(s);
     try std.testing.expectEqualStrings("2024-02", s);
 
-    const parsed = try PlainYearMonth.parseIso(s);
+    const parsed = try PlainYearMonth.from(.{ .string = s }, .{});
     try std.testing.expect(PlainYearMonth.equals(ym, parsed));
 }
 
-test "public API: withFields" {
-    const ym = try PlainYearMonth.create(2024, 2, .reject);
-    const ym2 = try ym.withFields(null, 6, .reject);
+test "public API: with" {
+    const ym = try PlainYearMonth.init(2024, 2, null, null);
+    const ym2 = try ym.with(.{ .year = null, .month = 6 }, .{ .overflow = .reject });
     try std.testing.expectEqual(@as(i32, 2024), ym2.year());
     try std.testing.expectEqual(@as(u8, 6), ym2.month());
 }
 
 test "public API: add/subtract via Duration, delegates to day=1 PlainDate" {
-    const ym = try PlainYearMonth.create(2024, 1, .reject);
-    const added = try ym.add(try Duration.create(0, 13, 0, 0, 0, 0, 0, 0, 0, 0), .constrain);
+    const ym = try PlainYearMonth.init(2024, 1, null, null);
+    const added = try ym.add(try Duration.init(0, 13, 0, 0, 0, 0, 0, 0, 0, 0), .constrain);
     try std.testing.expectEqual(@as(i32, 2025), added.year());
     try std.testing.expectEqual(@as(u8, 2), added.month());
 
-    const back = try added.subtract(try Duration.create(0, 13, 0, 0, 0, 0, 0, 0, 0, 0), .constrain);
+    const back = try added.subtract(try Duration.init(0, 13, 0, 0, 0, 0, 0, 0, 0, 0), .constrain);
     try std.testing.expect(PlainYearMonth.equals(ym, back));
 }
 
 test "public API: until/since" {
-    const a = try PlainYearMonth.create(2024, 1, .reject);
-    const b = try PlainYearMonth.create(2025, 6, .reject);
+    const a = try PlainYearMonth.init(2024, 1, null, null);
+    const b = try PlainYearMonth.init(2025, 6, null, null);
     const allocator = std.testing.allocator;
 
     const d = try a.until(b, .{});
-    const s = try d.toIsoString(allocator);
+    const s = try d.toString(allocator, .{});
     defer allocator.free(s);
     try std.testing.expectEqualStrings("P1Y5M", s);
 
     const d2 = try b.since(a, .{});
-    const s2 = try d2.toIsoString(allocator);
+    const s2 = try d2.toString(allocator, .{});
     defer allocator.free(s2);
     try std.testing.expectEqualStrings("P1Y5M", s2);
 }
 
 test "public API: toPlainDate always constrains" {
-    const ym = try PlainYearMonth.create(2024, 2, .reject);
+    const ym = try PlainYearMonth.init(2024, 2, null, null);
     const d = try ym.toPlainDate(35);
-    try std.testing.expect(PlainDate.equals(d, try PlainDate.create(2024, 2, 29, .reject)));
+    try std.testing.expect(PlainDate.equals(d, try PlainDate.init(2024, 2, 29, null)));
 }
 
 test "public API: random-batch differential against real Node" {
@@ -81,15 +81,15 @@ test "public API: random-batch differential against real Node" {
     };
     const allocator = std.testing.allocator;
     for (cases) |c| {
-        const a = try PlainYearMonth.create(c.a[0], c.a[1], .reject);
-        const b = try PlainYearMonth.create(c.b[0], c.b[1], .reject);
+        const a = try PlainYearMonth.init(c.a[0], c.a[1], null, null);
+        const b = try PlainYearMonth.init(c.b[0], c.b[1], null, null);
         const until_dur = try a.until(b, .{});
-        const until_s = try until_dur.toIsoString(allocator);
+        const until_s = try until_dur.toString(allocator, .{});
         defer allocator.free(until_s);
         try std.testing.expectEqualStrings(c.until_s, until_s);
 
         const since_dur = try a.since(b, .{});
-        const since_s = try since_dur.toIsoString(allocator);
+        const since_s = try since_dur.toString(allocator, .{});
         defer allocator.free(since_s);
         try std.testing.expectEqualStrings(c.since_s, since_s);
 
@@ -99,7 +99,7 @@ test "public API: random-batch differential against real Node" {
 }
 
 test "public API: PlainDate.toPlainYearMonth round-trips" {
-    const d = try PlainDate.create(2024, 2, 29, .reject);
-    const ym = d.toPlainYearMonth();
-    try std.testing.expect(PlainYearMonth.equals(ym, try PlainYearMonth.create(2024, 2, .reject)));
+    const d = try PlainDate.init(2024, 2, 29, null);
+    const ym = try d.toPlainYearMonth();
+    try std.testing.expect(PlainYearMonth.equals(ym, try PlainYearMonth.init(2024, 2, null, null)));
 }

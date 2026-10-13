@@ -1,12 +1,4 @@
-//! `Temporal.Duration`. No calendar dependency at all in this phase --
-//! ground-truthed against real Node that `.add()`/`.subtract()` never
-//! allow a years/months/weeks operand, regardless of `relativeTo`
-//! (contrary to the original roadmap sketch, which assumed they would
-//! need calendar support), so they're fully implemented here. `.compare()`
-//! is implemented only for the non-calendar-unit case (plus an
-//! always-available fields-equal fast path); the calendar-ambiguous case
-//! needs `PlainDate` arithmetic (Phase 3). `.round()`/`.total()` need the
-//! same and are not here at all yet.
+//! Temporal.Duration: Number components, exact internal arithmetic, and relative operations.
 const std = @import("std");
 const iso_string = @import("iso_string.zig");
 const duration_string = @import("duration_string.zig");
@@ -27,48 +19,70 @@ const NS_PER_DAY: i128 = 86_400_000_000_000;
 const CALENDAR_UNIT_MAX: u64 = 4_294_967_295; // 2^32 - 1
 const MAX_TIME_NS: i128 = (1 << 53) * 1_000_000_000 - 1;
 
+pub fn integer(value: f64) i128 {
+    return @intFromFloat(value);
+}
+fn number(value: anytype) TemporalError!f64 {
+    const result: f64 = switch (@typeInfo(@TypeOf(value))) {
+        .int, .comptime_int => @floatFromInt(value),
+        .float, .comptime_float => value,
+        else => @compileError("Temporal duration components must be numbers"),
+    };
+    if (!std.math.isFinite(result) or @trunc(result) != result or @abs(result) > @as(f64, @floatFromInt(MAX_TIME_NS))) return error.RangeError;
+    return if (result == 0) 0 else result;
+}
 pub const Duration = struct {
-    years: i64 = 0,
-    months: i64 = 0,
-    weeks: i64 = 0,
-    days: i64 = 0,
-    hours: i64 = 0,
-    minutes: i64 = 0,
-    seconds: i64 = 0,
-    milliseconds: i64 = 0,
-    microseconds: i64 = 0,
-    nanoseconds: i64 = 0,
+    years: f64 = 0,
+    months: f64 = 0,
+    weeks: f64 = 0,
+    days: f64 = 0,
+    hours: f64 = 0,
+    minutes: f64 = 0,
+    seconds: f64 = 0,
+    milliseconds: f64 = 0,
+    microseconds: f64 = 0,
+    nanoseconds: f64 = 0,
 
     /// Full `IsValidDuration`: all nonzero fields must share one sign,
     /// `|years|`/`|months|`/`|weeks|` individually bounded, and the
     /// combined time part bounded as a single total-nanoseconds value.
-    pub fn create(
-        years: i64,
-        months: i64,
-        weeks: i64,
-        days: i64,
-        hours: i64,
-        minutes: i64,
-        seconds: i64,
-        milliseconds: i64,
-        microseconds: i64,
-        nanoseconds: i64,
+    pub fn init(
+        in_years: anytype,
+        in_months: anytype,
+        in_weeks: anytype,
+        in_days: anytype,
+        in_hours: anytype,
+        in_minutes: anytype,
+        in_seconds: anytype,
+        in_milliseconds: anytype,
+        in_microseconds: anytype,
+        in_nanoseconds: anytype,
     ) TemporalError!Duration {
-        const fields = [_]i64{ years, months, weeks, days, hours, minutes, seconds, milliseconds, microseconds, nanoseconds };
+        const years = try number(in_years);
+        const months = try number(in_months);
+        const weeks = try number(in_weeks);
+        const days = try number(in_days);
+        const hours = try number(in_hours);
+        const minutes = try number(in_minutes);
+        const seconds = try number(in_seconds);
+        const milliseconds = try number(in_milliseconds);
+        const microseconds = try number(in_microseconds);
+        const nanoseconds = try number(in_nanoseconds);
+        const fields = [_]f64{ years, months, weeks, days, hours, minutes, seconds, milliseconds, microseconds, nanoseconds };
         var has_pos = false;
         var has_neg = false;
         for (fields) |v| {
             if (v > 0) has_pos = true;
             if (v < 0) has_neg = true;
         }
-        if (has_pos and has_neg) return error.InvalidRange;
+        if (has_pos and has_neg) return error.RangeError;
 
-        if (@abs(years) > CALENDAR_UNIT_MAX) return error.InvalidRange;
-        if (@abs(months) > CALENDAR_UNIT_MAX) return error.InvalidRange;
-        if (@abs(weeks) > CALENDAR_UNIT_MAX) return error.InvalidRange;
+        if (@abs(years) > CALENDAR_UNIT_MAX) return error.RangeError;
+        if (@abs(months) > CALENDAR_UNIT_MAX) return error.RangeError;
+        if (@abs(weeks) > CALENDAR_UNIT_MAX) return error.RangeError;
 
         const total_ns = timePartNanoseconds(days, hours, minutes, seconds, milliseconds, microseconds, nanoseconds);
-        if (total_ns > MAX_TIME_NS or total_ns < -MAX_TIME_NS) return error.InvalidRange;
+        if (total_ns > MAX_TIME_NS or total_ns < -MAX_TIME_NS) return error.RangeError;
 
         return .{
             .years = years,
@@ -84,28 +98,55 @@ pub const Duration = struct {
         };
     }
 
-    pub fn parseIso(text: []const u8) TemporalError!Duration {
+    pub const Fields = struct {
+        years: ?f64 = null,
+        months: ?f64 = null,
+        weeks: ?f64 = null,
+        days: ?f64 = null,
+        hours: ?f64 = null,
+        minutes: ?f64 = null,
+        seconds: ?f64 = null,
+        milliseconds: ?f64 = null,
+        microseconds: ?f64 = null,
+        nanoseconds: ?f64 = null,
+    };
+    pub const FromInput = union(enum) { string: []const u8, value: Duration, fields: Fields };
+    pub fn from(input: FromInput) TemporalError!Duration {
+        return switch (input) {
+            .string => |text| fromString(text),
+            .value => |value| blk: {
+                try value.validate();
+                break :blk value;
+            },
+            .fields => |f| blk: {
+                if (f.years == null and f.months == null and f.weeks == null and f.days == null and f.hours == null and f.minutes == null and f.seconds == null and f.milliseconds == null and f.microseconds == null and f.nanoseconds == null) return error.TypeError;
+                break :blk init(f.years orelse 0, f.months orelse 0, f.weeks orelse 0, f.days orelse 0, f.hours orelse 0, f.minutes orelse 0, f.seconds orelse 0, f.milliseconds orelse 0, f.microseconds orelse 0, f.nanoseconds orelse 0);
+            },
+        };
+    }
+    fn fromString(text: []const u8) TemporalError!Duration {
         const raw = try duration_string.parseDuration(text);
-        return create(raw.years, raw.months, raw.weeks, raw.days, raw.hours, raw.minutes, raw.seconds, raw.milliseconds, raw.microseconds, raw.nanoseconds);
+        return init(raw.years, raw.months, raw.weeks, raw.days, raw.hours, raw.minutes, raw.seconds, raw.milliseconds, raw.microseconds, raw.nanoseconds);
     }
 
-    /// Field overrides, re-validated the same way `create` does. A
+    /// Field overrides, re-validated the same way `init` does. A
     /// struct-of-optionals (not `PlainDate`/`PlainTime`'s positional
     /// `?i32` params) because 10 positional optionals would be unreadable
     /// and error-prone at call sites.
-    pub fn withFields(self: Duration, overrides: struct {
-        years: ?i64 = null,
-        months: ?i64 = null,
-        weeks: ?i64 = null,
-        days: ?i64 = null,
-        hours: ?i64 = null,
-        minutes: ?i64 = null,
-        seconds: ?i64 = null,
-        milliseconds: ?i64 = null,
-        microseconds: ?i64 = null,
-        nanoseconds: ?i64 = null,
+    pub fn with(self: Duration, overrides: struct {
+        years: ?f64 = null,
+        months: ?f64 = null,
+        weeks: ?f64 = null,
+        days: ?f64 = null,
+        hours: ?f64 = null,
+        minutes: ?f64 = null,
+        seconds: ?f64 = null,
+        milliseconds: ?f64 = null,
+        microseconds: ?f64 = null,
+        nanoseconds: ?f64 = null,
     }) TemporalError!Duration {
-        return create(
+        if (overrides.years == null and overrides.months == null and overrides.weeks == null and overrides.days == null and overrides.hours == null and overrides.minutes == null and overrides.seconds == null and overrides.milliseconds == null and overrides.microseconds == null and overrides.nanoseconds == null) return error.TypeError;
+        return init(
             overrides.years orelse self.years,
             overrides.months orelse self.months,
             overrides.weeks orelse self.weeks,
@@ -120,7 +161,7 @@ pub const Duration = struct {
     }
 
     pub fn sign(self: Duration) i8 {
-        const fields = [_]i64{ self.years, self.months, self.weeks, self.days, self.hours, self.minutes, self.seconds, self.milliseconds, self.microseconds, self.nanoseconds };
+        const fields = [_]f64{ self.years, self.months, self.weeks, self.days, self.hours, self.minutes, self.seconds, self.milliseconds, self.microseconds, self.nanoseconds };
         for (fields) |v| {
             if (v > 0) return 1;
             if (v < 0) return -1;
@@ -134,16 +175,16 @@ pub const Duration = struct {
 
     pub fn negated(self: Duration) Duration {
         return .{
-            .years = -self.years,
-            .months = -self.months,
-            .weeks = -self.weeks,
-            .days = -self.days,
-            .hours = -self.hours,
-            .minutes = -self.minutes,
-            .seconds = -self.seconds,
-            .milliseconds = -self.milliseconds,
-            .microseconds = -self.microseconds,
-            .nanoseconds = -self.nanoseconds,
+            .years = if (self.years == 0) 0 else -self.years,
+            .months = if (self.months == 0) 0 else -self.months,
+            .weeks = if (self.weeks == 0) 0 else -self.weeks,
+            .days = if (self.days == 0) 0 else -self.days,
+            .hours = if (self.hours == 0) 0 else -self.hours,
+            .minutes = if (self.minutes == 0) 0 else -self.minutes,
+            .seconds = if (self.seconds == 0) 0 else -self.seconds,
+            .milliseconds = if (self.milliseconds == 0) 0 else -self.milliseconds,
+            .microseconds = if (self.microseconds == 0) 0 else -self.microseconds,
+            .nanoseconds = if (self.nanoseconds == 0) 0 else -self.nanoseconds,
         };
     }
 
@@ -172,18 +213,37 @@ pub const Duration = struct {
     /// Fields-equal is a fast path that returns `.eq` even with calendar
     /// units present (ground-truthed: real Temporal short-circuits this
     /// case without needing `relativeTo`). Otherwise, if either side has
-    /// a nonzero year/month/week, `error.NeedsRelativeTo` (needs
+    /// a nonzero year/month/week, `error.RangeError` (needs
     /// calendar-aware balancing -- Phase 3). Otherwise compares via the
     /// combined total-nanoseconds value.
-    pub fn compare(a: Duration, b: Duration) TemporalError!std.math.Order {
+    pub const RelativeTo = union(enum) { plainDate: plain_date.PlainDate, plainDateTime: plain_date_time.PlainDateTime, zonedDateTime: @import("zoned_date_time.zig").ZonedDateTime };
+    pub const CompareOptions = struct { relativeTo: ?RelativeTo = null, allocator: std.mem.Allocator = std.heap.page_allocator, io: ?std.Io = null };
+    pub const RoundOptions = struct { relativeTo: ?RelativeTo = null, largestUnit: ?rounding.Unit = null, smallestUnit: ?rounding.Unit = null, roundingIncrement: u32 = 1, roundingMode: rounding.RoundingMode = .halfExpand, allocator: std.mem.Allocator = std.heap.page_allocator, io: ?std.Io = null };
+    pub const TotalOptions = struct { relativeTo: ?RelativeTo = null, unit: rounding.Unit, allocator: std.mem.Allocator = std.heap.page_allocator, io: ?std.Io = null };
+    fn anchor(rt: RelativeTo, allocator: std.mem.Allocator, io: ?std.Io) TemporalError!plain_date_time.PlainDateTime {
+        return switch (rt) {
+            .plainDate => |value| .{ .date = value },
+            .plainDateTime => |value| .{ .date = value.date },
+            .zonedDateTime => |value| value.toPlainDateTime(allocator, io orelse return error.TypeError),
+        };
+    }
+    fn endpoint(d: Duration, rt: RelativeTo, allocator: std.mem.Allocator, io: ?std.Io) TemporalError!i128 {
+        const rel = @import("relative.zig");
+        return switch (rt) {
+            .zonedDateTime => |value| (try value.add(allocator, io orelse return error.TypeError, d, .constrain)).epochNs,
+            else => rel.epoch(try (try anchor(rt, allocator, io)).add(d, .constrain), .{}),
+        };
+    }
+    pub fn compare(a: Duration, b: Duration, options: CompareOptions) TemporalError!std.math.Order {
+        try a.validate();
+        try b.validate();
         if (fieldsEqual(a, b)) return .eq;
-        if (a.hasCalendarUnits() or b.hasCalendarUnits()) return error.NeedsRelativeTo;
-        const na = timePartNanoseconds(a.days, a.hours, a.minutes, a.seconds, a.milliseconds, a.microseconds, a.nanoseconds);
-        const nb = timePartNanoseconds(b.days, b.hours, b.minutes, b.seconds, b.milliseconds, b.microseconds, b.nanoseconds);
-        return std.math.order(na, nb);
+        if (options.relativeTo) |rt| return std.math.order(try endpoint(a, rt, options.allocator, options.io), try endpoint(b, rt, options.allocator, options.io));
+        if (a.hasCalendarUnits() or b.hasCalendarUnits()) return error.RangeError;
+        return std.math.order(a.totalTimeNanoseconds(), b.totalTimeNanoseconds());
     }
 
-    /// `error.MixedCalendarUnits` if `self` or `other` has a nonzero year/
+    /// `error.RangeError` if `self` or `other` has a nonzero year/
     /// month/week (real Temporal's unconditional restriction -- not
     /// resolvable with any `relativeTo`). Otherwise balances the time-part
     /// fields up through `min(largestUnitRank(self), largestUnitRank(other))`
@@ -191,8 +251,13 @@ pub const Duration = struct {
     /// unit) -- ground-truthed: `25h+3h="PT28H"` (no promotion to days,
     /// neither operand had a days field) vs. `1d+30h="P2DT6H"` (promoted,
     /// since one operand did).
+    fn validate(self: Duration) TemporalError!void {
+        _ = try init(self.years, self.months, self.weeks, self.days, self.hours, self.minutes, self.seconds, self.milliseconds, self.microseconds, self.nanoseconds);
+    }
     pub fn add(self: Duration, other: Duration) TemporalError!Duration {
-        if (self.hasCalendarUnits() or other.hasCalendarUnits()) return error.MixedCalendarUnits;
+        try self.validate();
+        try other.validate();
+        if (self.hasCalendarUnits() or other.hasCalendarUnits()) return error.RangeError;
         const na = timePartNanoseconds(self.days, self.hours, self.minutes, self.seconds, self.milliseconds, self.microseconds, self.nanoseconds);
         const nb = timePartNanoseconds(other.days, other.hours, other.minutes, other.seconds, other.milliseconds, other.microseconds, other.nanoseconds);
         const target_rank = @min(self.largestUnitRank(), other.largestUnitRank());
@@ -228,10 +293,10 @@ pub const Duration = struct {
     /// largest field (ground-truthed: `{years:1,months:6}.round({
     /// smallestUnit:"day",...})` -> `P1Y6M`, keeping `year`).
     fn resolvedLargestForRound(self: Duration, options: rounding.RoundOptions) rounding.Unit {
-        if (options.largest_unit) |lu| return lu;
+        if (options.largestUnit) |lu| return lu;
         const self_largest = self.largestPresentUnit();
-        if (options.smallest_unit) |su| {
-            return if (@intFromEnum(su) < @intFromEnum(self_largest)) su else self_largest;
+        if (options.smallestUnit) |su| {
+            return if (@backingInt(su) < @backingInt(self_largest)) su else self_largest;
         }
         return self_largest;
     }
@@ -298,7 +363,7 @@ pub const Duration = struct {
         };
     }
 
-    /// Rounds to `options.smallest_unit`/`.largest_unit` (at least one
+    /// Rounds to `options.smallestUnit`/`.largestUnit` (at least one
     /// required). Ground-truthed real Temporal's actual composition
     /// whenever a year/month/week unit is involved: `round` with
     /// `relativeTo` is exactly `relativeTo-at-midnight.until(
@@ -311,63 +376,63 @@ pub const Duration = struct {
     /// to the same result either way there). No `relativeTo` needed (and
     /// none used, even if supplied) when neither the duration's own
     /// fields nor the requested units involve year/month/week.
-    pub fn round(self: Duration, relative_to: ?plain_date.PlainDate, options: rounding.RoundOptions) TemporalError!Duration {
-        if (options.smallest_unit == null and options.largest_unit == null) return error.InvalidRange;
-        const resolved_largest = self.resolvedLargestForRound(options);
-        const resolved_smallest = options.smallest_unit orelse .nanosecond;
-        if (@intFromEnum(resolved_largest) > @intFromEnum(resolved_smallest)) return error.InvalidRange;
-        try rounding.validateIncrement(resolved_smallest, options.rounding_increment);
-
-        if (relative_to) |rt| {
-            const start_dt = plain_date_time.PlainDateTime{ .date = rt, .time = .{} };
-            const end_dt = try start_dt.add(self, .constrain);
-            return start_dt.until(end_dt, .{
-                .largest_unit = resolved_largest,
-                .smallest_unit = resolved_smallest,
-                .rounding_increment = options.rounding_increment,
-                .rounding_mode = options.rounding_mode,
-            });
+    pub fn round(self: Duration, options: RoundOptions) TemporalError!Duration {
+        try self.validate();
+        const ro: rounding.RoundOptions = .{ .largestUnit = options.largestUnit, .smallestUnit = options.smallestUnit, .roundingIncrement = options.roundingIncrement, .roundingMode = options.roundingMode };
+        if (options.smallestUnit == null and options.largestUnit == null) return error.RangeError;
+        const largest = self.resolvedLargestForRound(ro);
+        const smallest = options.smallestUnit orelse .nanosecond;
+        if (@backingInt(largest) > @backingInt(smallest)) return error.RangeError;
+        try rounding.validateIncrement(smallest, options.roundingIncrement);
+        if (options.relativeTo) |rt| {
+            const start = try anchor(rt, options.allocator, options.io);
+            const target = try endpoint(self, rt, options.allocator, options.io);
+            const rel = @import("relative.zig");
+            var ctx: rel.Context = .{ .allocator = options.allocator, .io = options.io };
+            var end: plain_date_time.PlainDateTime = undefined;
+            var origin: i128 = undefined;
+            switch (rt) {
+                .zonedDateTime => |value| {
+                    ctx.zone = value.timeZoneId();
+                    origin = value.epochNs;
+                    end = try (try value.add(options.allocator, options.io.?, self, .constrain)).toPlainDateTime(options.allocator, options.io.?);
+                },
+                else => {
+                    origin = try rel.epoch(start, .{});
+                    end = try start.add(self, .constrain);
+                },
+            }
+            return rel.difference(start, end, origin, target, .{ .largestUnit = largest, .smallestUnit = smallest, .roundingIncrement = options.roundingIncrement, .roundingMode = options.roundingMode }, ctx);
         }
-        if (self.requiresRelativeTo(resolved_largest, resolved_smallest)) return error.NeedsRelativeTo;
-        return fromNanosecondsAtRankRounded(self.totalTimeNanoseconds(), rankFromUnit(resolved_largest), options.rounding_increment, options.rounding_mode);
+        if (self.requiresRelativeTo(largest, smallest)) return error.RangeError;
+        const quantum = nsPerUnitFor(smallest);
+        const rounded = rounding.roundRatioToIncrement(self.totalTimeNanoseconds(), quantum, options.roundingIncrement, options.roundingMode) * quantum;
+        return fromNanosecondsAtRank(rounded, rankFromUnit(largest));
     }
-
-    fn totalWithRelativeTo(self: Duration, rt: plain_date.PlainDate, unit: rounding.Unit) TemporalError!f64 {
-        const start_dt = plain_date_time.PlainDateTime{ .date = rt, .time = .{} };
-        const end_dt = try start_dt.add(self, .constrain);
-        const start_epoch = iso_calendar.toEpochDay(rt.iso_year, rt.iso_month, rt.iso_day);
-        const end_epoch = iso_calendar.toEpochDay(end_dt.date.iso_year, end_dt.date.iso_month, end_dt.date.iso_day);
-        if (rounding.isTimeUnit(unit)) {
-            const total_ns: i128 = (end_epoch - start_epoch) * NS_PER_DAY + (@as(i128, end_dt.time.totalNanoseconds()) - @as(i128, start_dt.time.totalNanoseconds()));
-            return @as(f64, @floatFromInt(total_ns)) / @as(f64, @floatFromInt(nsPerUnitFor(unit)));
+    pub fn total(self: Duration, options: TotalOptions) TemporalError!f64 {
+        try self.validate();
+        const rel = @import("relative.zig");
+        if (options.relativeTo) |rt| {
+            const start = try anchor(rt, options.allocator, options.io);
+            const target = try endpoint(self, rt, options.allocator, options.io);
+            var ctx: rel.Context = .{ .allocator = options.allocator, .io = options.io };
+            var end: plain_date_time.PlainDateTime = undefined;
+            var origin: i128 = undefined;
+            switch (rt) {
+                .zonedDateTime => |value| {
+                    ctx.zone = value.timeZoneId();
+                    origin = value.epochNs;
+                    end = try (try value.add(options.allocator, options.io.?, self, .constrain)).toPlainDateTime(options.allocator, options.io.?);
+                },
+                else => {
+                    origin = try rel.epoch(start, .{});
+                    end = try start.add(self, .constrain);
+                },
+            }
+            return rel.total(start, end, origin, target, options.unit, ctx);
         }
-        // `day`/`week` are fixed-length, so the sub-day time fraction
-        // folds in exactly (ground-truthed: a pure-time duration like
-        // `{hours:1,minutes:11}` against `unit:"week"` must still produce
-        // a nonzero fraction, e.g. `0.00704...` -- a bug caught here when
-        // `end_dt.date` alone equals `start_dt.date`, which would
-        // otherwise silently drop the entire time component to 0).
-        const time_frac: f64 = @as(f64, @floatFromInt(end_dt.time.totalNanoseconds())) / @as(f64, @floatFromInt(NS_PER_DAY));
-        const days_f: f64 = @as(f64, @floatFromInt(end_epoch - start_epoch)) + time_frac;
-        if (unit == .day) return days_f;
-        if (unit == .week) return days_f / 7.0;
-        // `month`/`year`: known simplification (documented in the Phase
-        // 3b plan for `PlainDateTime`'s own week/month/year rounding) --
-        // the sub-day time fraction's contribution to a month/year-sized
-        // rounding decision is treated as negligible.
-        return plain_date.totalUnitsBetween(rt.asYMD(), end_dt.date.asYMD(), unit);
-    }
-
-    /// Returns the exact (unrounded) fraction of `unit` the duration
-    /// represents, as a plain `f64` -- NOT a `Duration` (ground-truthed:
-    /// `{hours:36,minutes:30}.total({unit:"day"})` -> `1.5208333333333333`).
-    /// Same `relativeTo` requirement as `round` (`requiresRelativeTo`,
-    /// checked against `unit` alone here since `total` has no separate
-    /// largest/smallest pair).
-    pub fn total(self: Duration, relative_to: ?plain_date.PlainDate, unit: rounding.Unit) TemporalError!f64 {
-        if (relative_to) |rt| return self.totalWithRelativeTo(rt, unit);
-        if (self.hasCalendarUnits() or isCalendarOnlyUnit(unit)) return error.NeedsRelativeTo;
-        return @as(f64, @floatFromInt(self.totalTimeNanoseconds())) / @as(f64, @floatFromInt(nsPerUnitFor(unit)));
+        if (self.hasCalendarUnits() or isCalendarOnlyUnit(options.unit)) return error.RangeError;
+        return @floatCast(@as(f128, @floatFromInt(self.totalTimeNanoseconds())) / @as(f128, @floatFromInt(nsPerUnitFor(options.unit))));
     }
 
     /// 0=days .. 6=nanoseconds; the most-significant nonzero time-part
@@ -390,11 +455,54 @@ pub const Duration = struct {
     /// displayed seconds value for formatting purposes only (ground-
     /// truthed: `Duration(0,0,0,0,0,0,0,5000)` -- 5000ms -- stringifies as
     /// `"PT5S"`, without mutating the stored `.milliseconds` field).
-    pub fn toIsoString(self: Duration, allocator: std.mem.Allocator) ![]u8 {
-        const combined_ns: i128 = @as(i128, self.milliseconds) * 1_000_000 + @as(i128, self.microseconds) * 1_000 + @as(i128, self.nanoseconds);
-        const whole_seconds_carry: i64 = @intCast(@divTrunc(combined_ns, 1_000_000_000));
+    pub fn toLocaleString(self: Duration, allocator: std.mem.Allocator, locales: ?[]const u8, options: @import("locale.zig").DurationLocaleOptions) TemporalError![]u8 {
+        return @import("locale.zig").duration(allocator, locales, .{ self.years, self.months, self.weeks, self.days, self.hours, self.minutes, self.seconds, self.milliseconds, self.microseconds, self.nanoseconds }, options);
+    }
+    pub fn toString(self: Duration, allocator: std.mem.Allocator, options: StringOptions) TemporalError![]u8 {
+        try self.validate();
+        const p = try @import("format_options.zig").precision(options);
+        if (p.minute) return error.RangeError;
+        var value = self;
+        if (options.smallestUnit != null or options.fractionalSecondDigits != null) {
+            const ns = integer(self.seconds) * 1_000_000_000 + integer(self.milliseconds) * 1_000_000 + integer(self.microseconds) * 1_000 + integer(self.nanoseconds);
+            const unit = @import("plain_time.zig").nsPerUnit(p.unit);
+            const rounded = rounding.roundRatioToIncrement(ns, unit, p.increment, options.roundingMode) * unit;
+            value.seconds = @floatFromInt(@divTrunc(rounded, 1_000_000_000));
+            value.milliseconds = 0;
+            value.microseconds = 0;
+            value.nanoseconds = @floatFromInt(@rem(rounded, 1_000_000_000));
+        }
+        const raw = try value.formatDefault(allocator);
+        defer allocator.free(raw);
+        const digits = p.digits orelse return allocator.dupe(u8, raw);
+        const s_index = std.mem.lastIndexOfScalar(u8, raw, 'S');
+        const prefix = raw;
+        if (s_index) |end| {
+            var first = end;
+            while (first > 0 and (std.ascii.isDigit(raw[first - 1]) or raw[first - 1] == '.')) first -= 1;
+            const dot = std.mem.indexOfScalar(u8, raw[first..end], '.');
+            const whole_end = if (dot) |i| first + i else end;
+            if (digits == 0) return allocator.print("{s}S", .{raw[0..whole_end]});
+            var frac: [9]u8 = @splat('0');
+            if (dot) |_| {
+                const count = @min(end - whole_end - 1, 9);
+                @memcpy(frac[0..count], raw[whole_end + 1 .. whole_end + 1 + count]);
+            }
+            return allocator.print("{s}.{s}S", .{ raw[0..whole_end], frac[0..digits] });
+        }
+        var zeros: [9]u8 = @splat('0');
+        if (digits == 0) return allocator.print("{s}{s}0S", .{ prefix, if (std.mem.indexOfScalar(u8, prefix, 'T') == null) "T" else "" });
+        return allocator.print("{s}{s}0.{s}S", .{ prefix, if (std.mem.indexOfScalar(u8, prefix, 'T') == null) "T" else "", zeros[0..digits] });
+    }
+    pub fn toJSON(self: Duration, allocator: std.mem.Allocator) TemporalError![]u8 {
+        return self.toString(allocator, .{});
+    }
+    pub const StringOptions = @import("format_options.zig").StringOptions;
+    fn formatDefault(self: Duration, allocator: std.mem.Allocator) ![]u8 {
+        const combined_ns: i128 = integer(self.milliseconds) * 1_000_000 + integer(self.microseconds) * 1_000 + integer(self.nanoseconds);
+        const whole_seconds_carry: i128 = @intCast(@divTrunc(combined_ns, 1_000_000_000));
         const remainder_ns: i128 = @rem(combined_ns, 1_000_000_000);
-        const display_seconds: i64 = self.seconds + whole_seconds_carry;
+        const display_seconds: i128 = integer(self.seconds) + whole_seconds_carry;
 
         const remainder_abs: u32 = @intCast(@abs(remainder_ns));
         const disp_ms: u16 = @intCast(remainder_abs / 1_000_000);
@@ -414,17 +522,17 @@ pub const Duration = struct {
         len += 1;
         const start_after_p = len;
 
-        if (self.years != 0) len += (std.fmt.bufPrint(buf[len..], "{d}Y", .{@abs(self.years)}) catch unreachable).len;
-        if (self.months != 0) len += (std.fmt.bufPrint(buf[len..], "{d}M", .{@abs(self.months)}) catch unreachable).len;
-        if (self.weeks != 0) len += (std.fmt.bufPrint(buf[len..], "{d}W", .{@abs(self.weeks)}) catch unreachable).len;
-        if (self.days != 0) len += (std.fmt.bufPrint(buf[len..], "{d}D", .{@abs(self.days)}) catch unreachable).len;
+        if (self.years != 0) len += (std.fmt.bufPrint(buf[len..], "{d}Y", .{@abs(integer(self.years))}) catch unreachable).len;
+        if (self.months != 0) len += (std.fmt.bufPrint(buf[len..], "{d}M", .{@abs(integer(self.months))}) catch unreachable).len;
+        if (self.weeks != 0) len += (std.fmt.bufPrint(buf[len..], "{d}W", .{@abs(integer(self.weeks))}) catch unreachable).len;
+        if (self.days != 0) len += (std.fmt.bufPrint(buf[len..], "{d}D", .{@abs(integer(self.days))}) catch unreachable).len;
 
         const has_time = self.hours != 0 or self.minutes != 0 or display_seconds != 0 or frac.len != 0;
         if (has_time) {
             buf[len] = 'T';
             len += 1;
-            if (self.hours != 0) len += (std.fmt.bufPrint(buf[len..], "{d}H", .{@abs(self.hours)}) catch unreachable).len;
-            if (self.minutes != 0) len += (std.fmt.bufPrint(buf[len..], "{d}M", .{@abs(self.minutes)}) catch unreachable).len;
+            if (self.hours != 0) len += (std.fmt.bufPrint(buf[len..], "{d}H", .{@abs(integer(self.hours))}) catch unreachable).len;
+            if (self.minutes != 0) len += (std.fmt.bufPrint(buf[len..], "{d}M", .{@abs(integer(self.minutes))}) catch unreachable).len;
             if (display_seconds != 0 or frac.len != 0) {
                 len += (std.fmt.bufPrint(buf[len..], "{d}{s}S", .{ @abs(display_seconds), frac }) catch unreachable).len;
             }
@@ -439,15 +547,15 @@ pub const Duration = struct {
 
 /// `days`/`hours`/`minutes`/`seconds`/`milliseconds`/`microseconds`/
 /// `nanoseconds`, all converted to and summed as nanoseconds. Shared by
-/// `create`'s validation, `compare`, and `add`.
-fn timePartNanoseconds(days: i64, hours: i64, minutes: i64, seconds: i64, milliseconds: i64, microseconds: i64, nanoseconds: i64) i128 {
-    return @as(i128, days) * 86_400_000_000_000 +
-        @as(i128, hours) * 3_600_000_000_000 +
-        @as(i128, minutes) * 60_000_000_000 +
-        @as(i128, seconds) * 1_000_000_000 +
-        @as(i128, milliseconds) * 1_000_000 +
-        @as(i128, microseconds) * 1_000 +
-        @as(i128, nanoseconds);
+/// `init`'s validation, `compare`, and `add`.
+fn timePartNanoseconds(days: f64, hours: f64, minutes: f64, seconds: f64, milliseconds: f64, microseconds: f64, nanoseconds: f64) i128 {
+    return integer(days) * 86_400_000_000_000 +
+        integer(hours) * 3_600_000_000_000 +
+        integer(minutes) * 60_000_000_000 +
+        integer(seconds) * 1_000_000_000 +
+        integer(milliseconds) * 1_000_000 +
+        integer(microseconds) * 1_000 +
+        integer(nanoseconds);
 }
 
 /// Inverse of `timePartNanoseconds`, but stopping the "days/hours/.../ns"
@@ -456,24 +564,15 @@ fn timePartNanoseconds(days: i64, hours: i64, minutes: i64, seconds: i64, millis
 /// field AT `target_rank` absorbs everything larger than it instead of
 /// being further carried up (this is `add`/`subtract`'s balancing rule).
 fn fromNanosecondsAtRank(total_ns: i128, target_rank: u8) TemporalError!Duration {
-    // Bounds-checked up front: every `@intCast` below narrows a quotient
-    // or remainder of `remaining` into i64, and `remaining` only ever
-    // shrinks in magnitude (divided or remainder'd against a positive
-    // constant) from its starting value `total_ns` -- so one check here
-    // guarantees all of them are safe, including the final one at
-    // `target_rank == 6`, which skips every division and casts the raw,
-    // unreduced `total_ns` directly. Without this, an adversarial caller
-    // (found via a real Test262-driven crash after this repo got wired
-    // into z-interpreter, not a hypothetical) panics instead of getting
-    // a catchable error.
-    if (total_ns < std.math.minInt(i64) or total_ns > std.math.maxInt(i64)) return error.InvalidRange;
+    // Exact internal decomposition; init performs the observable Number conversion.
+    if (total_ns < -MAX_TIME_NS or total_ns > MAX_TIME_NS) return error.RangeError;
     var remaining = total_ns;
-    var days: i64 = 0;
-    var hours: i64 = 0;
-    var minutes: i64 = 0;
-    var seconds: i64 = 0;
-    var milliseconds: i64 = 0;
-    var microseconds: i64 = 0;
+    var days: i128 = 0;
+    var hours: i128 = 0;
+    var minutes: i128 = 0;
+    var seconds: i128 = 0;
+    var milliseconds: i128 = 0;
+    var microseconds: i128 = 0;
 
     if (target_rank <= 0) {
         days = @intCast(@divTrunc(remaining, 86_400_000_000_000));
@@ -499,152 +598,156 @@ fn fromNanosecondsAtRank(total_ns: i128, target_rank: u8) TemporalError!Duration
         microseconds = @intCast(@divTrunc(remaining, 1_000));
         remaining = @rem(remaining, 1_000);
     }
-    const nanoseconds: i64 = @intCast(remaining);
+    const nanoseconds: i128 = remaining;
 
-    return Duration.create(0, 0, 0, days, hours, minutes, seconds, milliseconds, microseconds, nanoseconds);
+    return Duration.init(0, 0, 0, days, hours, minutes, seconds, milliseconds, microseconds, nanoseconds);
 }
 
-test "create: sign consistency" {
-    try std.testing.expectError(error.InvalidRange, Duration.create(-1, 1, 0, 0, 0, 0, 0, 0, 0, 0));
-    _ = try Duration.create(-1, -2, 0, 0, -3, 0, 0, 0, 0, 0);
+test "init: sign consistency" {
+    try std.testing.expectError(error.RangeError, Duration.init(-1, 1, 0, 0, 0, 0, 0, 0, 0, 0));
+    _ = try Duration.init(-1, -2, 0, 0, -3, 0, 0, 0, 0, 0);
 }
 
-test "create: calendar-unit bound is exactly 2^32-1" {
-    _ = try Duration.create(4_294_967_295, 0, 0, 0, 0, 0, 0, 0, 0, 0);
-    try std.testing.expectError(error.InvalidRange, Duration.create(4_294_967_296, 0, 0, 0, 0, 0, 0, 0, 0, 0));
+test "init: calendar-unit bound is exactly 2^32-1" {
+    _ = try Duration.init(4_294_967_295, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    try std.testing.expectError(error.RangeError, Duration.init(4_294_967_296, 0, 0, 0, 0, 0, 0, 0, 0, 0));
 }
 
-test "create: time-part total-nanoseconds bound matches bisected Node boundaries" {
-    _ = try Duration.create(0, 0, 0, 104_249_991_374, 0, 0, 0, 0, 0, 0);
-    try std.testing.expectError(error.InvalidRange, Duration.create(0, 0, 0, 104_249_991_375, 0, 0, 0, 0, 0, 0));
-    _ = try Duration.create(0, 0, 0, 0, 2_501_999_792_983, 0, 0, 0, 0, 0);
-    try std.testing.expectError(error.InvalidRange, Duration.create(0, 0, 0, 0, 2_501_999_792_984, 0, 0, 0, 0, 0));
-    _ = try Duration.create(0, 0, 0, 0, 0, 0, 9_007_199_254_740_991, 0, 0, 0);
-    try std.testing.expectError(error.InvalidRange, Duration.create(0, 0, 0, 0, 0, 0, 9_007_199_254_740_992, 0, 0, 0));
+test "init: time-part total-nanoseconds bound matches bisected Node boundaries" {
+    _ = try Duration.init(0, 0, 0, 104_249_991_374, 0, 0, 0, 0, 0, 0);
+    try std.testing.expectError(error.RangeError, Duration.init(0, 0, 0, 104_249_991_375, 0, 0, 0, 0, 0, 0));
+    _ = try Duration.init(0, 0, 0, 0, 2_501_999_792_983, 0, 0, 0, 0, 0);
+    try std.testing.expectError(error.RangeError, Duration.init(0, 0, 0, 0, 2_501_999_792_984, 0, 0, 0, 0, 0));
+    _ = try Duration.init(0, 0, 0, 0, 0, 0, 9_007_199_254_740_991, 0, 0, 0);
+    try std.testing.expectError(error.RangeError, Duration.init(0, 0, 0, 0, 0, 0, 9_007_199_254_740_992, 0, 0, 0));
 }
 
 test "sign / blank" {
-    const blank_d = try Duration.create(0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    const blank_d = try Duration.init(0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
     try std.testing.expect(blank_d.blank());
     try std.testing.expectEqual(@as(i8, 0), blank_d.sign());
-    const pos = try Duration.create(1, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    const pos = try Duration.init(1, 0, 0, 0, 0, 0, 0, 0, 0, 0);
     try std.testing.expectEqual(@as(i8, 1), pos.sign());
-    const neg = try Duration.create(-1, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    const neg = try Duration.init(-1, 0, 0, 0, 0, 0, 0, 0, 0, 0);
     try std.testing.expectEqual(@as(i8, -1), neg.sign());
 }
 
 test "negated / abs" {
-    const d = try Duration.create(1, 2, 0, 3, 0, 0, 0, 0, 0, 0);
+    const d = try Duration.init(1, 2, 0, 3, 0, 0, 0, 0, 0, 0);
     const n = d.negated();
     try std.testing.expectEqual(@as(i64, -1), n.years);
     try std.testing.expectEqual(@as(i64, -2), n.months);
-    const a = (try Duration.create(-1, -2, 0, -3, 0, 0, 0, 0, 0, 0)).abs();
+    const a = (try Duration.init(-1, -2, 0, -3, 0, 0, 0, 0, 0, 0)).abs();
     try std.testing.expectEqual(@as(i64, 1), a.years);
 }
 
 test "compare: equal fields is a fast path even with calendar units" {
-    const a = try Duration.create(1, 0, 0, 0, 0, 0, 0, 0, 0, 0);
-    try std.testing.expectEqual(std.math.Order.eq, try Duration.compare(a, a));
+    const a = try Duration.init(1, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    try std.testing.expectEqual(std.math.Order.eq, try Duration.compare(a, a, .{}));
 }
 
 test "compare: calendar units on either side (not equal) needs relativeTo" {
-    const a = try Duration.create(2, 0, 0, 0, 0, 0, 0, 0, 0, 0);
-    const b = try Duration.create(1, 0, 0, 0, 0, 0, 0, 0, 0, 0);
-    try std.testing.expectError(error.NeedsRelativeTo, Duration.compare(a, b));
+    const a = try Duration.init(2, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    const b = try Duration.init(1, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    try std.testing.expectError(error.RangeError, Duration.compare(a, b, .{}));
 }
 
 test "compare: non-calendar durations compare by total nanoseconds" {
-    const a = try Duration.create(0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
-    const b = try Duration.create(0, 0, 0, 1, 0, 0, 0, 0, 0, 0);
-    try std.testing.expectEqual(std.math.Order.lt, try Duration.compare(a, b));
+    const a = try Duration.init(0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    const b = try Duration.init(0, 0, 0, 1, 0, 0, 0, 0, 0, 0);
+    try std.testing.expectEqual(std.math.Order.lt, try Duration.compare(a, b, .{}));
 }
 
 test "add/subtract: throws on any calendar-unit operand, no exception for relativeTo" {
-    const y = try Duration.create(1, 0, 0, 0, 0, 0, 0, 0, 0, 0);
-    const d = try Duration.create(0, 0, 0, 1, 0, 0, 0, 0, 0, 0);
-    try std.testing.expectError(error.MixedCalendarUnits, Duration.add(y, d));
-    try std.testing.expectError(error.MixedCalendarUnits, Duration.subtract(y, d));
+    const y = try Duration.init(1, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    const d = try Duration.init(0, 0, 0, 1, 0, 0, 0, 0, 0, 0);
+    try std.testing.expectError(error.RangeError, Duration.add(y, d));
+    try std.testing.expectError(error.RangeError, Duration.subtract(y, d));
 }
 
 test "add: no promotion when neither operand has the larger unit" {
-    const a = try Duration.create(0, 0, 0, 0, 25, 0, 0, 0, 0, 0);
-    const b = try Duration.create(0, 0, 0, 0, 3, 0, 0, 0, 0, 0);
+    const a = try Duration.init(0, 0, 0, 0, 25, 0, 0, 0, 0, 0);
+    const b = try Duration.init(0, 0, 0, 0, 3, 0, 0, 0, 0, 0);
     const r = try Duration.add(a, b);
     try std.testing.expectEqual(@as(i64, 0), r.days);
     try std.testing.expectEqual(@as(i64, 28), r.hours);
 }
 
 test "add: promotion when one operand has the larger unit" {
-    const a = try Duration.create(0, 0, 0, 1, 0, 0, 0, 0, 0, 0);
-    const b = try Duration.create(0, 0, 0, 0, 30, 0, 0, 0, 0, 0);
+    const a = try Duration.init(0, 0, 0, 1, 0, 0, 0, 0, 0, 0);
+    const b = try Duration.init(0, 0, 0, 0, 30, 0, 0, 0, 0, 0);
     const r = try Duration.add(a, b);
     try std.testing.expectEqual(@as(i64, 2), r.days);
     try std.testing.expectEqual(@as(i64, 6), r.hours);
 }
 
 test "subtract: can produce a negative result" {
-    const a = try Duration.create(0, 0, 0, 0, 1, 0, 0, 0, 0, 0);
-    const b = try Duration.create(0, 0, 0, 0, 5, 0, 0, 0, 0, 0);
+    const a = try Duration.init(0, 0, 0, 0, 1, 0, 0, 0, 0, 0);
+    const b = try Duration.init(0, 0, 0, 0, 5, 0, 0, 0, 0, 0);
     const r = try Duration.subtract(a, b);
     try std.testing.expectEqual(@as(i64, -4), r.hours);
 }
 
-test "toIsoString matches real Node byte-for-byte" {
+test "toString matches real Node byte-for-byte" {
     const allocator = std.testing.allocator;
     {
-        const d = try Duration.create(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
-        const s = try d.toIsoString(allocator);
+        const d = try Duration.init(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
+        const s = try d.toString(allocator, .{});
         defer allocator.free(s);
         try std.testing.expectEqualStrings("P1Y2M3W4DT5H6M7.00800901S", s);
     }
     {
-        const d = try Duration.create(0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
-        const s = try d.toIsoString(allocator);
+        const d = try Duration.init(0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        const s = try d.toString(allocator, .{});
         defer allocator.free(s);
         try std.testing.expectEqualStrings("PT0S", s);
     }
     {
-        const d = try Duration.create(-1, -2, 0, 0, -3, 0, 0, 0, 0, 0);
-        const s = try d.toIsoString(allocator);
+        const d = try Duration.init(-1, -2, 0, 0, -3, 0, 0, 0, 0, 0);
+        const s = try d.toString(allocator, .{});
         defer allocator.free(s);
         try std.testing.expectEqualStrings("-P1Y2MT3H", s);
     }
     {
-        const d = try Duration.create(0, 0, 0, 0, 0, 0, 0, 0, 0, -5);
-        const s = try d.toIsoString(allocator);
+        const d = try Duration.init(0, 0, 0, 0, 0, 0, 0, 0, 0, -5);
+        const s = try d.toString(allocator, .{});
         defer allocator.free(s);
         try std.testing.expectEqualStrings("-PT0.000000005S", s);
     }
     {
-        const d = try Duration.create(1, 0, 0, 0, 0, 0, 0, 0, 0, 0);
-        const s = try d.toIsoString(allocator);
+        const d = try Duration.init(1, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        const s = try d.toString(allocator, .{});
         defer allocator.free(s);
         try std.testing.expectEqualStrings("P1Y", s);
     }
     {
-        const d = try Duration.create(0, 0, 0, 0, 1, 0, 5, 0, 0, 0);
-        const s = try d.toIsoString(allocator);
+        const d = try Duration.init(0, 0, 0, 0, 1, 0, 5, 0, 0, 0);
+        const s = try d.toString(allocator, .{});
         defer allocator.free(s);
         try std.testing.expectEqualStrings("PT1H5S", s);
     }
     {
-        const d = try Duration.create(0, 0, 0, 0, 0, 5, 0, 0, 0, 0);
-        const s = try d.toIsoString(allocator);
+        const d = try Duration.init(0, 0, 0, 0, 0, 5, 0, 0, 0, 0);
+        const s = try d.toString(allocator, .{});
         defer allocator.free(s);
         try std.testing.expectEqualStrings("PT5M", s);
     }
     {
         // ms=5000 displays as "PT5S" without mutating the stored field.
-        const d = try Duration.create(0, 0, 0, 0, 0, 0, 0, 5000, 0, 0);
-        const s = try d.toIsoString(allocator);
+        const d = try Duration.init(0, 0, 0, 0, 0, 0, 0, 5000, 0, 0);
+        const s = try d.toString(allocator, .{});
         defer allocator.free(s);
         try std.testing.expectEqualStrings("PT5S", s);
         try std.testing.expectEqual(@as(i64, 5000), d.milliseconds);
     }
 }
 
-test "parseIso round-trips" {
-    const d = try Duration.parseIso("P1Y2M3W4DT5H6M7.5S");
+test "fromString round-trips" {
+    const d = try Duration.from(.{ .string = "P1Y2M3W4DT5H6M7.5S" });
     try std.testing.expectEqual(@as(i64, 1), d.years);
     try std.testing.expectEqual(@as(i64, 500), d.milliseconds);
+}
+
+pub fn validate(value: Duration) TemporalError!void {
+    try value.validate();
 }

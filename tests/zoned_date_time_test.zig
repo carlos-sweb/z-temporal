@@ -6,20 +6,20 @@ const OffsetOption = ztemporal.OffsetOption;
 
 const NY = "America/New_York";
 
-test "public API: create, toIsoString round-trip" {
+test "public API: init, toString round-trip" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
-    const z = try ZonedDateTime.create(allocator, io, 1_710_055_800_000_000_000, NY);
-    const s = try z.toIsoString(allocator, io, true, true, false);
+    const z = try ZonedDateTime.init(allocator, io, 1_710_055_800_000_000_000, NY, null);
+    const s = try z.toString(allocator, io, .{ .offset = .auto, .timeZoneName = .auto, .calendarName = .never });
     defer allocator.free(s);
     try std.testing.expectEqualStrings("2024-03-10T03:30:00-04:00[America/New_York]", s);
 }
 
-test "public API: create, toIsoString with calendar annotation" {
+test "public API: init, toString with calendar annotation" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
-    const z = try ZonedDateTime.create(allocator, io, 1_718_452_800_000_000_000, "UTC");
-    const s = try z.toIsoString(allocator, io, true, true, true);
+    const z = try ZonedDateTime.init(allocator, io, 1_718_452_800_000_000_000, "UTC", null);
+    const s = try z.toString(allocator, io, .{ .offset = .auto, .timeZoneName = .auto, .calendarName = .always });
     defer allocator.free(s);
     try std.testing.expectEqualStrings("2024-06-15T12:00:00+00:00[UTC][u-ca=iso8601]", s);
 }
@@ -30,16 +30,16 @@ test "fromFields: DST gap x 4 disambiguation modes" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
-    const compatible = try ZonedDateTime.fromFields(allocator, io, 2024, 3, 10, 2, 30, 0, 0, 0, 0, NY, .constrain, .compatible);
-    try std.testing.expectEqual(@as(i128, 1_710_055_800_000_000_000), compatible.epoch_nanoseconds);
+    const compatible = try ZonedDateTime.from(allocator, io, .{ .fields = .{ .year = 2024, .month = 3, .day = 10, .hour = 2, .minute = 30, .second = 0, .millisecond = 0, .microsecond = 0, .nanosecond = 0, .timeZone = NY } }, .{ .overflow = .constrain, .disambiguation = .compatible });
+    try std.testing.expectEqual(@as(i128, 1_710_055_800_000_000_000), compatible.epochNs);
 
-    const later = try ZonedDateTime.fromFields(allocator, io, 2024, 3, 10, 2, 30, 0, 0, 0, 0, NY, .constrain, .later);
-    try std.testing.expectEqual(@as(i128, 1_710_055_800_000_000_000), later.epoch_nanoseconds);
+    const later = try ZonedDateTime.from(allocator, io, .{ .fields = .{ .year = 2024, .month = 3, .day = 10, .hour = 2, .minute = 30, .second = 0, .millisecond = 0, .microsecond = 0, .nanosecond = 0, .timeZone = NY } }, .{ .overflow = .constrain, .disambiguation = .later });
+    try std.testing.expectEqual(@as(i128, 1_710_055_800_000_000_000), later.epochNs);
 
-    const earlier = try ZonedDateTime.fromFields(allocator, io, 2024, 3, 10, 2, 30, 0, 0, 0, 0, NY, .constrain, .earlier);
-    try std.testing.expectEqual(@as(i128, 1_710_052_200_000_000_000), earlier.epoch_nanoseconds);
+    const earlier = try ZonedDateTime.from(allocator, io, .{ .fields = .{ .year = 2024, .month = 3, .day = 10, .hour = 2, .minute = 30, .second = 0, .millisecond = 0, .microsecond = 0, .nanosecond = 0, .timeZone = NY } }, .{ .overflow = .constrain, .disambiguation = .earlier });
+    try std.testing.expectEqual(@as(i128, 1_710_052_200_000_000_000), earlier.epochNs);
 
-    try std.testing.expectError(error.AmbiguousTime, ZonedDateTime.fromFields(allocator, io, 2024, 3, 10, 2, 30, 0, 0, 0, 0, NY, .constrain, .reject));
+    try std.testing.expectError(error.RangeError, ZonedDateTime.from(allocator, io, .{ .fields = .{ .year = 2024, .month = 3, .day = 10, .hour = 2, .minute = 30, .second = 0, .millisecond = 0, .microsecond = 0, .nanosecond = 0, .timeZone = NY } }, .{ .overflow = .constrain, .disambiguation = .reject }));
 }
 
 // DST fold: 2024-11-03T01:30 in America/New_York happens twice (fall back
@@ -48,16 +48,16 @@ test "fromFields: DST fold x 4 disambiguation modes" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
-    const compatible = try ZonedDateTime.fromFields(allocator, io, 2024, 11, 3, 1, 30, 0, 0, 0, 0, NY, .constrain, .compatible);
-    try std.testing.expectEqual(@as(i128, 1_730_611_800_000_000_000), compatible.epoch_nanoseconds);
+    const compatible = try ZonedDateTime.from(allocator, io, .{ .fields = .{ .year = 2024, .month = 11, .day = 3, .hour = 1, .minute = 30, .second = 0, .millisecond = 0, .microsecond = 0, .nanosecond = 0, .timeZone = NY } }, .{ .overflow = .constrain, .disambiguation = .compatible });
+    try std.testing.expectEqual(@as(i128, 1_730_611_800_000_000_000), compatible.epochNs);
 
-    const earlier = try ZonedDateTime.fromFields(allocator, io, 2024, 11, 3, 1, 30, 0, 0, 0, 0, NY, .constrain, .earlier);
-    try std.testing.expectEqual(@as(i128, 1_730_611_800_000_000_000), earlier.epoch_nanoseconds);
+    const earlier = try ZonedDateTime.from(allocator, io, .{ .fields = .{ .year = 2024, .month = 11, .day = 3, .hour = 1, .minute = 30, .second = 0, .millisecond = 0, .microsecond = 0, .nanosecond = 0, .timeZone = NY } }, .{ .overflow = .constrain, .disambiguation = .earlier });
+    try std.testing.expectEqual(@as(i128, 1_730_611_800_000_000_000), earlier.epochNs);
 
-    const later = try ZonedDateTime.fromFields(allocator, io, 2024, 11, 3, 1, 30, 0, 0, 0, 0, NY, .constrain, .later);
-    try std.testing.expectEqual(@as(i128, 1_730_615_400_000_000_000), later.epoch_nanoseconds);
+    const later = try ZonedDateTime.from(allocator, io, .{ .fields = .{ .year = 2024, .month = 11, .day = 3, .hour = 1, .minute = 30, .second = 0, .millisecond = 0, .microsecond = 0, .nanosecond = 0, .timeZone = NY } }, .{ .overflow = .constrain, .disambiguation = .later });
+    try std.testing.expectEqual(@as(i128, 1_730_615_400_000_000_000), later.epochNs);
 
-    try std.testing.expectError(error.AmbiguousTime, ZonedDateTime.fromFields(allocator, io, 2024, 11, 3, 1, 30, 0, 0, 0, 0, NY, .constrain, .reject));
+    try std.testing.expectError(error.RangeError, ZonedDateTime.from(allocator, io, .{ .fields = .{ .year = 2024, .month = 11, .day = 3, .hour = 1, .minute = 30, .second = 0, .millisecond = 0, .microsecond = 0, .nanosecond = 0, .timeZone = NY } }, .{ .overflow = .constrain, .disambiguation = .reject }));
 }
 
 // A normal time that merely falls within a day of a DST transition must
@@ -66,49 +66,49 @@ test "fromFields: normal time near a transition is unambiguous under every mode"
     const allocator = std.testing.allocator;
     const io = std.testing.io;
     inline for (.{ .compatible, .earlier, .later, .reject }) |mode| {
-        const z = try ZonedDateTime.fromFields(allocator, io, 2024, 3, 10, 5, 0, 0, 0, 0, 0, NY, .constrain, mode);
-        try std.testing.expectEqual(@as(i128, 1_710_061_200_000_000_000), z.epoch_nanoseconds);
+        const z = try ZonedDateTime.from(allocator, io, .{ .fields = .{ .year = 2024, .month = 3, .day = 10, .hour = 5, .minute = 0, .second = 0, .millisecond = 0, .microsecond = 0, .nanosecond = 0, .timeZone = NY } }, .{ .overflow = .constrain, .disambiguation = mode });
+        try std.testing.expectEqual(@as(i128, 1_710_061_200_000_000_000), z.epochNs);
     }
 }
 
 // Offset option matrix: string carries a deliberately wrong offset
 // (America/New_York is -04:00 in June, string says -03:00).
-test "parseIso: offset option matrix with a wrong offset" {
+test "fromString: offset option matrix with a wrong offset" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
     const text = "2024-06-15T12:00:00-03:00[America/New_York]";
 
-    const used = try ZonedDateTime.parseIso(allocator, io, text, .use, .compatible);
-    try std.testing.expectEqual(@as(i128, 1_718_463_600_000_000_000), used.epoch_nanoseconds);
+    const used = try ZonedDateTime.from(allocator, io, .{ .string = text }, .{ .offset = .use, .disambiguation = .compatible });
+    try std.testing.expectEqual(@as(i128, 1_718_463_600_000_000_000), used.epochNs);
 
-    const preferred = try ZonedDateTime.parseIso(allocator, io, text, .prefer, .compatible);
-    try std.testing.expectEqual(@as(i128, 1_718_467_200_000_000_000), preferred.epoch_nanoseconds);
+    const preferred = try ZonedDateTime.from(allocator, io, .{ .string = text }, .{ .offset = .prefer, .disambiguation = .compatible });
+    try std.testing.expectEqual(@as(i128, 1_718_467_200_000_000_000), preferred.epochNs);
 
-    const ignored = try ZonedDateTime.parseIso(allocator, io, text, .ignore, .compatible);
-    try std.testing.expectEqual(@as(i128, 1_718_467_200_000_000_000), ignored.epoch_nanoseconds);
+    const ignored = try ZonedDateTime.from(allocator, io, .{ .string = text }, .{ .offset = .ignore, .disambiguation = .compatible });
+    try std.testing.expectEqual(@as(i128, 1_718_467_200_000_000_000), ignored.epochNs);
 
-    try std.testing.expectError(error.AmbiguousTime, ZonedDateTime.parseIso(allocator, io, text, .reject, .compatible));
+    try std.testing.expectError(error.RangeError, ZonedDateTime.from(allocator, io, .{ .string = text }, .{ .offset = .reject, .disambiguation = .compatible }));
 }
 
-test "parseIso: offset option with a correct offset always uses it" {
+test "fromString: offset option with a correct offset always uses it" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
-    const z = try ZonedDateTime.parseIso(allocator, io, "2024-06-15T12:00:00-04:00[America/New_York]", .use, .compatible);
-    try std.testing.expectEqual(@as(i128, 1_718_467_200_000_000_000), z.epoch_nanoseconds);
+    const z = try ZonedDateTime.from(allocator, io, .{ .string = "2024-06-15T12:00:00-04:00[America/New_York]" }, .{ .offset = .use, .disambiguation = .compatible });
+    try std.testing.expectEqual(@as(i128, 1_718_467_200_000_000_000), z.epochNs);
 }
 
 // `prefer` picks whichever fold candidate the given offset actually
 // matches, rather than falling back to `.compatible`'s first-occurrence
 // rule -- ground-truthed both fold offsets round-trip through `prefer`.
-test "parseIso: offset option .prefer picks the matching fold candidate" {
+test "fromString: offset option .prefer picks the matching fold candidate" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
-    const first = try ZonedDateTime.parseIso(allocator, io, "2024-11-03T01:30:00-04:00[America/New_York]", .prefer, .compatible);
-    try std.testing.expectEqual(@as(i128, 1_730_611_800_000_000_000), first.epoch_nanoseconds);
+    const first = try ZonedDateTime.from(allocator, io, .{ .string = "2024-11-03T01:30:00-04:00[America/New_York]" }, .{ .offset = .prefer, .disambiguation = .compatible });
+    try std.testing.expectEqual(@as(i128, 1_730_611_800_000_000_000), first.epochNs);
 
-    const second = try ZonedDateTime.parseIso(allocator, io, "2024-11-03T01:30:00-05:00[America/New_York]", .prefer, .compatible);
-    try std.testing.expectEqual(@as(i128, 1_730_615_400_000_000_000), second.epoch_nanoseconds);
+    const second = try ZonedDateTime.from(allocator, io, .{ .string = "2024-11-03T01:30:00-05:00[America/New_York]" }, .{ .offset = .prefer, .disambiguation = .compatible });
+    try std.testing.expectEqual(@as(i128, 1_730_615_400_000_000_000), second.epochNs);
 }
 
 // `equals` additionally requires the same `timeZoneId` (and `calendarId`,
@@ -116,8 +116,8 @@ test "parseIso: offset option .prefer picks the matching fold candidate" {
 test "equals vs compare: same instant, different time zone" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
-    const a = try ZonedDateTime.parseIso(allocator, io, "2024-06-15T12:00:00-04:00[America/New_York]", .reject, .compatible);
-    const b = try ZonedDateTime.create(allocator, io, a.epoch_nanoseconds, "UTC");
+    const a = try ZonedDateTime.from(allocator, io, .{ .string = "2024-06-15T12:00:00-04:00[America/New_York]" }, .{ .offset = .reject, .disambiguation = .compatible });
+    const b = try ZonedDateTime.init(allocator, io, a.epochNs, "UTC", null);
 
     try std.testing.expectEqual(std.math.Order.eq, ZonedDateTime.compare(a, b));
     try std.testing.expect(!ZonedDateTime.equals(a, b));
@@ -128,23 +128,23 @@ test "hoursInDay: normal day is 24, DST transition days are 23/25" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
-    const normal = try ZonedDateTime.parseIso(allocator, io, "2024-06-15T00:00:00-04:00[America/New_York]", .reject, .compatible);
+    const normal = try ZonedDateTime.from(allocator, io, .{ .string = "2024-06-15T00:00:00-04:00[America/New_York]" }, .{ .offset = .reject, .disambiguation = .compatible });
     try std.testing.expectApproxEqAbs(@as(f64, 24), try normal.hoursInDay(allocator, io), 1e-9);
 
-    const spring = try ZonedDateTime.parseIso(allocator, io, "2024-03-10T00:00:00-05:00[America/New_York]", .reject, .compatible);
+    const spring = try ZonedDateTime.from(allocator, io, .{ .string = "2024-03-10T00:00:00-05:00[America/New_York]" }, .{ .offset = .reject, .disambiguation = .compatible });
     try std.testing.expectApproxEqAbs(@as(f64, 23), try spring.hoursInDay(allocator, io), 1e-9);
 
-    const fall = try ZonedDateTime.parseIso(allocator, io, "2024-11-03T00:00:00-04:00[America/New_York]", .reject, .compatible);
+    const fall = try ZonedDateTime.from(allocator, io, .{ .string = "2024-11-03T00:00:00-04:00[America/New_York]" }, .{ .offset = .reject, .disambiguation = .compatible });
     try std.testing.expectApproxEqAbs(@as(f64, 25), try fall.hoursInDay(allocator, io), 1e-9);
 }
 
 test "startOfDay" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
-    const mid = try ZonedDateTime.parseIso(allocator, io, "2024-06-15T15:30:00-04:00[America/New_York]", .reject, .compatible);
+    const mid = try ZonedDateTime.from(allocator, io, .{ .string = "2024-06-15T15:30:00-04:00[America/New_York]" }, .{ .offset = .reject, .disambiguation = .compatible });
     const start = try mid.startOfDay(allocator, io);
-    try std.testing.expectEqual(@as(i128, 1_718_424_000_000_000_000), start.epoch_nanoseconds);
-    const s = try start.toIsoString(allocator, io, true, true, false);
+    try std.testing.expectEqual(@as(i128, 1_718_424_000_000_000_000), start.epochNs);
+    const s = try start.toString(allocator, io, .{ .offset = .auto, .timeZoneName = .auto, .calendarName = .never });
     defer allocator.free(s);
     try std.testing.expectEqualStrings("2024-06-15T00:00:00-04:00[America/New_York]", s);
 }
@@ -152,43 +152,43 @@ test "startOfDay" {
 test "getTimeZoneTransition: next and previous" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
-    const mid = try ZonedDateTime.parseIso(allocator, io, "2024-06-15T15:30:00-04:00[America/New_York]", .reject, .compatible);
+    const mid = try ZonedDateTime.from(allocator, io, .{ .string = "2024-06-15T15:30:00-04:00[America/New_York]" }, .{ .offset = .reject, .disambiguation = .compatible });
 
     const next = (try mid.getTimeZoneTransition(allocator, io, .next)).?;
-    try std.testing.expectEqual(@as(i128, 1_730_613_600_000_000_000), next.epoch_nanoseconds);
+    try std.testing.expectEqual(@as(i128, 1_730_613_600_000_000_000), next.epochNs);
 
     const previous = (try mid.getTimeZoneTransition(allocator, io, .previous)).?;
-    try std.testing.expectEqual(@as(i128, 1_710_054_000_000_000_000), previous.epoch_nanoseconds);
+    try std.testing.expectEqual(@as(i128, 1_710_054_000_000_000_000), previous.epochNs);
 }
 
 // Real Temporal's ZonedDateTime genuinely supports non-ISO calendars (the
 // getters would change meaning), so this repo rejects them explicitly
 // instead of silently ignoring them like `Instant` does.
-test "parseIso: non-iso8601 calendar annotation is rejected" {
+test "fromString: non-iso8601 calendar annotation is rejected" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
-    try std.testing.expectError(error.InvalidFormat, ZonedDateTime.parseIso(allocator, io, "2024-06-15T12:00:00-04:00[America/New_York][u-ca=hebrew]", .reject, .compatible));
+    try std.testing.expectError(error.RangeError, ZonedDateTime.from(allocator, io, .{ .string = "2024-06-15T12:00:00-04:00[America/New_York][u-ca=unknown]" }, .{ .offset = .reject, .disambiguation = .compatible }));
 
-    const ok = try ZonedDateTime.parseIso(allocator, io, "2024-06-15T12:00:00-04:00[America/New_York][u-ca=iso8601]", .reject, .compatible);
-    try std.testing.expectEqual(@as(i128, 1_718_467_200_000_000_000), ok.epoch_nanoseconds);
+    const ok = try ZonedDateTime.from(allocator, io, .{ .string = "2024-06-15T12:00:00-04:00[America/New_York][u-ca=iso8601]" }, .{ .offset = .reject, .disambiguation = .compatible });
+    try std.testing.expectEqual(@as(i128, 1_718_467_200_000_000_000), ok.epochNs);
 }
 
-test "parseIso: missing time zone bracket is a format error" {
+test "fromString: missing time zone bracket is a format error" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
-    try std.testing.expectError(error.InvalidFormat, ZonedDateTime.parseIso(allocator, io, "2024-06-15T12:00:00-04:00", .reject, .compatible));
+    try std.testing.expectError(error.RangeError, ZonedDateTime.from(allocator, io, .{ .string = "2024-06-15T12:00:00-04:00" }, .{ .offset = .reject, .disambiguation = .compatible }));
 }
 
-test "create: invalid time zone id" {
+test "init: invalid time zone id" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
-    try std.testing.expectError(error.InvalidTimeZone, ZonedDateTime.create(allocator, io, 0, "Not/A_Real_Zone"));
+    try std.testing.expectError(error.RangeError, ZonedDateTime.init(allocator, io, 0, "Not/A_Real_Zone", null));
 }
 
 test "toPlainDate/toPlainTime/toPlainDateTime getters" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
-    const z = try ZonedDateTime.parseIso(allocator, io, "2024-06-15T15:30:45.123456789-04:00[America/New_York]", .reject, .compatible);
+    const z = try ZonedDateTime.from(allocator, io, .{ .string = "2024-06-15T15:30:45.123456789-04:00[America/New_York]" }, .{ .offset = .reject, .disambiguation = .compatible });
 
     try std.testing.expectEqual(@as(i32, 2024), try z.year(allocator, io));
     try std.testing.expectEqual(@as(u8, 6), try z.month(allocator, io));
@@ -208,7 +208,7 @@ test "toPlainDate/toPlainTime/toPlainDateTime getters" {
 test "toInstant is a pure projection" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
-    const z = try ZonedDateTime.create(allocator, io, 1_718_467_200_000_000_000, NY);
+    const z = try ZonedDateTime.init(allocator, io, 1_718_467_200_000_000_000, NY, null);
     const instant = z.toInstant();
-    try std.testing.expectEqual(@as(i128, 1_718_467_200_000_000_000), instant.epoch_nanoseconds);
+    try std.testing.expectEqual(@as(i128, 1_718_467_200_000_000_000), instant.epochNs);
 }

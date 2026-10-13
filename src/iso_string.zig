@@ -24,12 +24,12 @@ fn isDigit(c: u8) bool {
 }
 
 fn readNDigits(s: []const u8, pos: *usize, n: usize) TemporalError!u32 {
-    if (pos.* + n > s.len) return error.InvalidFormat;
+    if (pos.* + n > s.len) return error.RangeError;
     var value: u32 = 0;
     var i: usize = 0;
     while (i < n) : (i += 1) {
         const c = s[pos.* + i];
-        if (!isDigit(c)) return error.InvalidFormat;
+        if (!isDigit(c)) return error.RangeError;
         value = value * 10 + (c - '0');
     }
     pos.* += n;
@@ -37,7 +37,7 @@ fn readNDigits(s: []const u8, pos: *usize, n: usize) TemporalError!u32 {
 }
 
 fn expect(s: []const u8, pos: *usize, c: u8) TemporalError!void {
-    if (pos.* >= s.len or s[pos.*] != c) return error.InvalidFormat;
+    if (pos.* >= s.len or s[pos.*] != c) return error.RangeError;
     pos.* += 1;
 }
 
@@ -46,6 +46,7 @@ fn parseSignedYear(s: []const u8, pos: *usize) TemporalError!i32 {
         const negative = s[pos.*] == '-';
         pos.* += 1;
         const mag = try readNDigits(s, pos, 6);
+        if (negative and mag == 0) return error.RangeError;
         const v: i32 = @intCast(mag);
         return if (negative) -v else v;
     }
@@ -55,12 +56,13 @@ fn parseSignedYear(s: []const u8, pos: *usize) TemporalError!i32 {
 
 fn parseDatePart(s: []const u8, pos: *usize) TemporalError!ParsedDate {
     const year = try parseSignedYear(s, pos);
-    try expect(s, pos, '-');
+    const separated = pos.* < s.len and s[pos.*] == '-';
+    if (separated) pos.* += 1;
     const month = try readNDigits(s, pos, 2);
-    try expect(s, pos, '-');
+    if (separated) try expect(s, pos, '-');
     const day = try readNDigits(s, pos, 2);
-    if (month < 1 or month > 12) return error.InvalidFormat;
-    if (day < 1 or day > 31) return error.InvalidFormat;
+    if (month < 1 or month > 12) return error.RangeError;
+    if (day < 1 or day > @import("iso_calendar.zig").daysInMonth(year, @intCast(month))) return error.RangeError;
     return .{ .year = year, .month = @intCast(month), .day = @intCast(day) };
 }
 
@@ -68,15 +70,16 @@ fn parseDatePart(s: []const u8, pos: *usize) TemporalError!ParsedDate {
 /// bare-hour forms are rejected/ambiguous, not supported this phase).
 fn parseTimePart(s: []const u8, pos: *usize) TemporalError!ParsedTime {
     const hour = try readNDigits(s, pos, 2);
-    try expect(s, pos, ':');
-    const minute = try readNDigits(s, pos, 2);
-    if (hour > 23 or minute > 59) return error.InvalidFormat;
+    const separated = pos.* < s.len and s[pos.*] == ':';
+    if (separated) pos.* += 1;
+    const minute = if (pos.* < s.len and isDigit(s[pos.*])) try readNDigits(s, pos, 2) else if (separated) return error.RangeError else 0;
+    if (hour > 23 or minute > 59) return error.RangeError;
     var result = ParsedTime{ .hour = @intCast(hour), .minute = @intCast(minute) };
-    if (pos.* < s.len and s[pos.*] == ':') {
-        pos.* += 1;
+    if (pos.* < s.len and (if (separated) s[pos.*] == ':' else isDigit(s[pos.*]))) {
+        if (separated) pos.* += 1;
         const second = try readNDigits(s, pos, 2);
-        if (second > 59) return error.InvalidFormat;
-        result.second = @intCast(second);
+        if (second > 60) return error.RangeError;
+        result.second = @intCast(@min(second, 59));
         if (pos.* < s.len and (s[pos.*] == '.' or s[pos.*] == ',')) {
             pos.* += 1;
             const start = pos.*;
@@ -86,11 +89,9 @@ fn parseTimePart(s: []const u8, pos: *usize) TemporalError!ParsedTime {
                 digits[i] = s[pos.*];
                 pos.* += 1;
             }
-            if (pos.* == start) return error.InvalidFormat; // '.' with no digits
-            // extra digits beyond 9 are allowed by the grammar but dropped
-            // (sub-nanosecond precision isn't representable here).
-            while (pos.* < s.len and isDigit(s[pos.*])) pos.* += 1;
-            const ns_total = std.fmt.parseInt(u32, &digits, 10) catch return error.InvalidFormat;
+            if (pos.* == start) return error.RangeError; // '.' with no digits
+            if (pos.* < s.len and isDigit(s[pos.*])) return error.RangeError;
+            const ns_total = std.fmt.parseInt(u32, &digits, 10) catch return error.RangeError;
             result.millisecond = @intCast(ns_total / 1_000_000);
             result.microsecond = @intCast((ns_total / 1_000) % 1_000);
             result.nanosecond = @intCast(ns_total % 1_000);
@@ -105,55 +106,62 @@ fn parseTimePart(s: []const u8, pos: *usize) TemporalError!ParsedTime {
 /// phase, cares about it).
 fn skipOffset(s: []const u8, pos: *usize) TemporalError!void {
     if (pos.* >= s.len) return;
-    if (s[pos.*] == 'Z' or s[pos.*] == 'z') {
-        pos.* += 1;
-        return;
-    }
-    if (s[pos.*] == '+' or s[pos.*] == '-') {
-        pos.* += 1;
-        _ = try readNDigits(s, pos, 2);
-        try expect(s, pos, ':');
-        _ = try readNDigits(s, pos, 2);
-        if (pos.* < s.len and s[pos.*] == ':') {
-            pos.* += 1;
-            _ = try readNDigits(s, pos, 2);
-            if (pos.* < s.len and (s[pos.*] == '.' or s[pos.*] == ',')) {
-                pos.* += 1;
-                const start = pos.*;
-                while (pos.* < s.len and isDigit(s[pos.*])) pos.* += 1;
-                if (pos.* == start) return error.InvalidFormat;
-            }
-        }
-    }
+    if (s[pos.*] == 'Z' or s[pos.*] == 'z') return error.RangeError;
+    if (s[pos.*] == '+' or s[pos.*] == '-') _ = try parseRequiredOffsetNanoseconds(s, pos);
 }
 
 /// Zero or more `[...]` bracket annotations. Each is either a timezone
-/// name (no `=`, e.g. `[America/New_York]`, discarded -- a later phase's
-/// concern) or `[u-ca=CalendarId]` (optionally critical-flagged with a
-/// leading `!`). Phase 1 is ISO-only: any calendar id other than
-/// `"iso8601"` is `error.InvalidFormat` (non-ISO calendars are Phase 8).
-fn skipAnnotations(s: []const u8, pos: *usize) TemporalError!void {
+/// name (no `=`, e.g. `[America/New_York]`, discarded by Plain types) or `[u-ca=CalendarId]` (optionally critical-flagged with a
+/// leading `!`). Calendar identifiers are validated against the enabled backend.
+fn annotations(s: []const u8, pos: *usize, validate_calendar: bool) TemporalError!void {
+    var calendar_seen = false;
+    var calendar_critical = false;
+    var zone_seen = false;
     while (pos.* < s.len and s[pos.*] == '[') {
         pos.* += 1;
         const start = pos.*;
         while (pos.* < s.len and s[pos.*] != ']') pos.* += 1;
-        if (pos.* >= s.len) return error.InvalidFormat;
+        if (pos.* >= s.len) return error.RangeError;
         var inner = s[start..pos.*];
-        pos.* += 1; // consume ']'
-        if (inner.len > 0 and inner[0] == '!') inner = inner[1..];
+        pos.* += 1;
+        const critical = inner.len > 0 and inner[0] == '!';
+        if (critical) inner = inner[1..];
+        if (inner.len == 0) return error.RangeError;
         if (std.mem.indexOfScalar(u8, inner, '=')) |eq| {
             const key = inner[0..eq];
             const value = inner[eq + 1 ..];
-            if (std.mem.eql(u8, key, "u-ca")) {
-                if (!std.mem.eql(u8, value, "iso8601")) return error.InvalidFormat;
+            if (key.len == 0 or value.len == 0) return error.RangeError;
+            if (!(std.ascii.isLower(key[0]) or key[0] == '_')) return error.RangeError;
+            for (key) |c| if (!(std.ascii.isLower(c) or std.ascii.isDigit(c) or c == '_' or c == '-')) return error.RangeError;
+            // Match the pinned Node 26.5 IXDTF scanner's observable handling of
+            // ignored extension values (first/last characters are not validated).
+            // https://github.com/unicode-org/icu4x/blob/main/utils/ixdtf/src/parsers/annotations.rs
+            if (value.len < 2) return error.RangeError;
+            var value_index: usize = 1;
+            while (value_index < value.len) {
+                const c = value[value_index];
+                value_index += 1;
+                if (value_index == value.len) break;
+                if (c == '-') {
+                    if (value_index + 1 >= value.len or !std.ascii.isAlphanumeric(value[value_index + 1])) return error.RangeError;
+                    value_index += 1;
+                } else if (!std.ascii.isAlphanumeric(c)) return error.RangeError;
             }
-            // Other `key=value` annotations (e.g. future extensions):
-            // ignored, matching real spec's "unknown non-critical
-            // annotations are ignored" rule (critical-flag enforcement
-            // is a documented narrowing, not implemented this phase).
+            if (std.mem.eql(u8, key, "u-ca")) {
+                if (calendar_seen and (critical or calendar_critical)) return error.RangeError;
+                if (!calendar_seen and validate_calendar) _ = try @import("calendar.zig").parse(value);
+                calendar_seen = true;
+                calendar_critical = calendar_critical or critical;
+            } else if (critical) return error.RangeError;
+        } else {
+            if (zone_seen) return error.RangeError;
+            zone_seen = true;
+            for (inner) |c| if (!(std.ascii.isAlphanumeric(c) or c == '/' or c == '_' or c == '-' or c == '+' or c == ':' or c == '.')) return error.RangeError;
         }
-        // else: bare timezone-name annotation, discarded.
     }
+}
+fn skipAnnotations(s: []const u8, pos: *usize) TemporalError!void {
+    return annotations(s, pos, true);
 }
 
 /// `Z`/`z`, or a signed `HH:MM[:SS[.fraction]]` offset, returned as total
@@ -164,21 +172,22 @@ fn skipAnnotations(s: []const u8, pos: *usize) TemporalError!void {
 /// string -- ground-truthed: a bare local-time string throws "Required
 /// fields missing from Instant string" in real Temporal.
 fn parseRequiredOffsetNanoseconds(s: []const u8, pos: *usize) TemporalError!i64 {
-    if (pos.* >= s.len) return error.InvalidFormat;
+    if (pos.* >= s.len) return error.RangeError;
     if (s[pos.*] == 'Z' or s[pos.*] == 'z') {
         pos.* += 1;
         return 0;
     }
-    if (s[pos.*] != '+' and s[pos.*] != '-') return error.InvalidFormat;
+    if (s[pos.*] != '+' and s[pos.*] != '-') return error.RangeError;
     const negative = s[pos.*] == '-';
     pos.* += 1;
     const hour = try readNDigits(s, pos, 2);
-    try expect(s, pos, ':');
-    const minute = try readNDigits(s, pos, 2);
+    const separated = pos.* < s.len and s[pos.*] == ':';
+    if (separated) pos.* += 1;
+    const minute = if (pos.* < s.len and isDigit(s[pos.*])) try readNDigits(s, pos, 2) else 0;
     var second: u32 = 0;
     var frac_ns: u32 = 0;
-    if (pos.* < s.len and s[pos.*] == ':') {
-        pos.* += 1;
+    if (pos.* < s.len and (if (separated) s[pos.*] == ':' else isDigit(s[pos.*]))) {
+        if (separated) pos.* += 1;
         second = try readNDigits(s, pos, 2);
         if (pos.* < s.len and (s[pos.*] == '.' or s[pos.*] == ',')) {
             pos.* += 1;
@@ -189,12 +198,12 @@ fn parseRequiredOffsetNanoseconds(s: []const u8, pos: *usize) TemporalError!i64 
                 digits[i] = s[pos.*];
                 pos.* += 1;
             }
-            if (pos.* == start) return error.InvalidFormat;
-            while (pos.* < s.len and isDigit(s[pos.*])) pos.* += 1;
-            frac_ns = std.fmt.parseInt(u32, &digits, 10) catch return error.InvalidFormat;
+            if (pos.* == start) return error.RangeError;
+            if (pos.* < s.len and isDigit(s[pos.*])) return error.RangeError;
+            frac_ns = std.fmt.parseInt(u32, &digits, 10) catch return error.RangeError;
         }
     }
-    if (hour > 23 or minute > 59 or second > 59) return error.InvalidFormat;
+    if (hour > 23 or minute > 59 or second > 59) return error.RangeError;
     const total_ns: i64 = @as(i64, hour) * 3_600_000_000_000 + @as(i64, minute) * 60_000_000_000 + @as(i64, second) * 1_000_000_000 + frac_ns;
     return if (negative) -total_ns else total_ns;
 }
@@ -204,12 +213,7 @@ fn parseRequiredOffsetNanoseconds(s: []const u8, pos: *usize) TemporalError!i64 
 /// calendar annotation, including a critically-flagged non-iso8601 one
 /// (`[!u-ca=hebrew]`), unlike every other type in this repo.
 fn skipAnnotationsNoCalendarValidation(s: []const u8, pos: *usize) TemporalError!void {
-    while (pos.* < s.len and s[pos.*] == '[') {
-        pos.* += 1;
-        while (pos.* < s.len and s[pos.*] != ']') pos.* += 1;
-        if (pos.* >= s.len) return error.InvalidFormat;
-        pos.* += 1; // consume ']'
-    }
+    return annotations(s, pos, false);
 }
 
 pub const ParsedInstant = struct { date: ParsedDate, time: ParsedTime, offset_nanoseconds: i64 };
@@ -223,16 +227,16 @@ pub const ParsedInstant = struct { date: ParsedDate, time: ParsedTime, offset_na
 pub fn parseInstant(s: []const u8) TemporalError!ParsedInstant {
     var pos: usize = 0;
     const date = try parseDatePart(s, &pos);
-    if (pos >= s.len or (s[pos] != 'T' and s[pos] != 't' and s[pos] != ' ')) return error.InvalidFormat;
+    if (pos >= s.len or (s[pos] != 'T' and s[pos] != 't' and s[pos] != ' ')) return error.RangeError;
     pos += 1;
     const time = try parseTimePart(s, &pos);
     const offset_nanoseconds = try parseRequiredOffsetNanoseconds(s, &pos);
     try skipAnnotationsNoCalendarValidation(s, &pos);
-    if (pos != s.len) return error.InvalidFormat;
+    if (pos != s.len) return error.RangeError;
     return .{ .date = date, .time = time, .offset_nanoseconds = offset_nanoseconds };
 }
 
-pub const ParsedZonedDateTime = struct { date: ParsedDate, time: ParsedTime, offset_nanoseconds: ?i64, time_zone_id: []const u8 };
+pub const ParsedZonedDateTime = struct { date: ParsedDate, time: ParsedTime, offset_nanoseconds: ?i64, time_zone_id: []const u8, isUtc: bool = false, minutePrecision: bool = false };
 
 /// A ZonedDateTime string: date part, `T`/space, time part, then an
 /// OPTIONAL offset (`Z` or signed `HH:MM[:SS[.fraction]]` -- ground-truthed
@@ -248,34 +252,40 @@ pub const ParsedZonedDateTime = struct { date: ParsedDate, time: ParsedTime, off
 pub fn parseZonedDateTime(s: []const u8) TemporalError!ParsedZonedDateTime {
     var pos: usize = 0;
     const date = try parseDatePart(s, &pos);
-    if (pos >= s.len or (s[pos] != 'T' and s[pos] != 't' and s[pos] != ' ')) return error.InvalidFormat;
+    if (pos >= s.len or (s[pos] != 'T' and s[pos] != 't' and s[pos] != ' ')) return error.RangeError;
     pos += 1;
     const time = try parseTimePart(s, &pos);
 
+    const is_utc = pos < s.len and (s[pos] == 'Z' or s[pos] == 'z');
+    const offset_start = pos;
     var offset_nanoseconds: ?i64 = null;
     if (pos < s.len and (s[pos] == 'Z' or s[pos] == 'z' or s[pos] == '+' or s[pos] == '-')) {
         offset_nanoseconds = try parseRequiredOffsetNanoseconds(s, &pos);
     }
 
-    if (pos >= s.len or s[pos] != '[') return error.InvalidFormat;
+    var offset_digits: usize = 0;
+    for (s[offset_start..pos]) |c| {
+        if (isDigit(c)) offset_digits += 1;
+    }
+    if (pos >= s.len or s[pos] != '[') return error.RangeError;
     pos += 1;
     const tz_start = pos;
     while (pos < s.len and s[pos] != ']') pos += 1;
-    if (pos >= s.len) return error.InvalidFormat;
+    if (pos >= s.len) return error.RangeError;
     var time_zone_id = s[tz_start..pos];
     pos += 1; // consume ']'
     if (time_zone_id.len > 0 and time_zone_id[0] == '!') time_zone_id = time_zone_id[1..];
-    if (time_zone_id.len == 0 or std.mem.indexOfScalar(u8, time_zone_id, '=') != null) return error.InvalidFormat;
+    if (time_zone_id.len == 0 or std.mem.indexOfScalar(u8, time_zone_id, '=') != null) return error.RangeError;
 
     try skipAnnotations(s, &pos);
-    if (pos != s.len) return error.InvalidFormat;
-    return .{ .date = date, .time = time, .offset_nanoseconds = offset_nanoseconds, .time_zone_id = time_zone_id };
+    if (pos != s.len) return error.RangeError;
+    return .{ .date = date, .time = time, .offset_nanoseconds = offset_nanoseconds, .time_zone_id = time_zone_id, .isUtc = is_utc, .minutePrecision = offset_digits <= 4 };
 }
 
 /// A PlainDate string: date part, then an optional (ignored) time+offset,
 /// then optional annotations. Trailing content after the date part is
 /// tolerated only in these well-formed shapes -- anything else is
-/// `error.InvalidFormat`.
+/// `error.RangeError`.
 pub fn parsePlainDate(s: []const u8) TemporalError!ParsedDate {
     var pos: usize = 0;
     const date = try parseDatePart(s, &pos);
@@ -285,7 +295,7 @@ pub fn parsePlainDate(s: []const u8) TemporalError!ParsedDate {
         try skipOffset(s, &pos);
     }
     try skipAnnotations(s, &pos);
-    if (pos != s.len) return error.InvalidFormat;
+    if (pos != s.len) return error.RangeError;
     return date;
 }
 
@@ -296,20 +306,35 @@ pub fn parsePlainDate(s: []const u8) TemporalError!ParsedDate {
 /// `-` means "this is a date-time string", anything else is "time-only".
 pub fn parsePlainTime(s: []const u8) TemporalError!ParsedTime {
     var pos: usize = 0;
+    const prefixed = s.len > 0 and (s[0] == 'T' or s[0] == 't');
+    if (prefixed) pos = 1;
+    if (!prefixed and s.len >= 4 and isDigit(s[0]) and isDigit(s[1]) and isDigit(s[2]) and isDigit(s[3]) and s[2] != ':') {
+        const m = try readNDigits(s, &pos, 2);
+        const d = try readNDigits(s, &pos, 2);
+        pos = 0;
+        if (m >= 1 and m <= 12 and d >= 1 and d <= 31 and (s.len == 4 or s[4] == '[')) return error.RangeError;
+    }
+    if (!prefixed and s.len >= 6) {
+        const end = std.mem.indexOfScalar(u8, s, '[') orelse s.len;
+        if (end == 6 and std.ascii.isDigit(s[0]) and std.ascii.isDigit(s[1]) and std.ascii.isDigit(s[2]) and std.ascii.isDigit(s[3]) and std.ascii.isDigit(s[4]) and std.ascii.isDigit(s[5])) {
+            const possible_month = std.fmt.parseInt(u8, s[4..6], 10) catch return error.RangeError;
+            if (possible_month >= 1 and possible_month <= 12) return error.RangeError;
+        }
+    }
     const looks_like_date = s.len >= 5 and (isDigit(s[0]) and s[1] == '0' or true) and blk: {
         // A date part starts with a sign, or 4 digits followed by '-'.
         if (s[0] == '+' or s[0] == '-') break :blk true;
-        break :blk s.len > 4 and isDigit(s[0]) and isDigit(s[1]) and isDigit(s[2]) and isDigit(s[3]) and s[4] == '-';
+        break :blk s.len > 4 and isDigit(s[0]) and isDigit(s[1]) and isDigit(s[2]) and isDigit(s[3]) and (s[4] == '-' or std.mem.indexOfAny(u8, s, "Tt ") != null);
     };
     if (looks_like_date) {
         _ = try parseDatePart(s, &pos);
-        if (pos >= s.len or (s[pos] != 'T' and s[pos] != 't' and s[pos] != ' ')) return error.InvalidFormat;
+        if (pos >= s.len or (s[pos] != 'T' and s[pos] != 't' and s[pos] != ' ')) return error.RangeError;
         pos += 1;
     }
     const time = try parseTimePart(s, &pos);
     try skipOffset(s, &pos);
     try skipAnnotations(s, &pos);
-    if (pos != s.len) return error.InvalidFormat;
+    if (pos != s.len) return error.RangeError;
     return time;
 }
 
@@ -321,21 +346,25 @@ pub const ParsedYearMonth = struct { year: i32, month: u8 };
 pub fn parsePlainYearMonth(s: []const u8) TemporalError!ParsedYearMonth {
     var pos: usize = 0;
     const year = try parseSignedYear(s, &pos);
-    try expect(s, &pos, '-');
+    const separated = pos < s.len and s[pos] == '-';
+    if (separated) pos += 1;
     const month = try readNDigits(s, &pos, 2);
-    if (month < 1 or month > 12) return error.InvalidFormat;
-    if (pos < s.len and s[pos] == '-') {
-        pos += 1;
+    if (month < 1 or month > 12) return error.RangeError;
+    var has_day = false;
+    if (pos < s.len and (if (separated) s[pos] == '-' else isDigit(s[pos]))) {
+        if (separated) pos += 1;
         const day = try readNDigits(s, &pos, 2);
-        if (day < 1 or day > 31) return error.InvalidFormat;
+        has_day = true;
+        if (day < 1 or day > @import("iso_calendar.zig").daysInMonth(year, @intCast(month))) return error.RangeError;
     }
     if (pos < s.len and (s[pos] == 'T' or s[pos] == 't' or s[pos] == ' ')) {
+        if (!has_day) return error.RangeError;
         pos += 1;
         _ = try parseTimePart(s, &pos);
         try skipOffset(s, &pos);
     }
     try skipAnnotations(s, &pos);
-    if (pos != s.len) return error.InvalidFormat;
+    if (pos != s.len) return error.RangeError;
     return .{ .year = year, .month = @intCast(month) };
 }
 
@@ -347,8 +376,10 @@ pub const ParsedMonthDay = struct { month: u8, day: u8 };
 /// or 4 digits followed by `-`, means "this is a full date string".
 pub fn parsePlainMonthDay(s: []const u8) TemporalError!ParsedMonthDay {
     var pos: usize = 0;
-    const looks_like_full_date = (s.len > 0 and (s[0] == '+' or s[0] == '-')) or
-        (s.len >= 5 and isDigit(s[0]) and isDigit(s[1]) and isDigit(s[2]) and isDigit(s[3]) and s[4] == '-');
+    const short_prefix = std.mem.startsWith(u8, s, "--");
+    if (short_prefix) pos = 2;
+    const looks_like_full_date = !short_prefix and ((s.len > 0 and (s[0] == '+' or s[0] == '-')) or
+        (s.len >= 5 and isDigit(s[0]) and isDigit(s[1]) and isDigit(s[2]) and isDigit(s[3]) and (s[4] == '-' or (s.len >= 8 and isDigit(s[4])))));
     if (looks_like_full_date) {
         const date = try parseDatePart(s, &pos);
         if (pos < s.len and (s[pos] == 'T' or s[pos] == 't' or s[pos] == ' ')) {
@@ -357,21 +388,17 @@ pub fn parsePlainMonthDay(s: []const u8) TemporalError!ParsedMonthDay {
             try skipOffset(s, &pos);
         }
         try skipAnnotations(s, &pos);
-        if (pos != s.len) return error.InvalidFormat;
+        if (pos != s.len) return error.RangeError;
         return .{ .month = date.month, .day = date.day };
     }
     const month = try readNDigits(s, &pos, 2);
-    try expect(s, &pos, '-');
+    if (pos < s.len and s[pos] == '-') pos += 1;
     const day = try readNDigits(s, &pos, 2);
-    if (month < 1 or month > 12) return error.InvalidFormat;
-    if (day < 1 or day > 31) return error.InvalidFormat;
-    if (pos < s.len and (s[pos] == 'T' or s[pos] == 't' or s[pos] == ' ')) {
-        pos += 1;
-        _ = try parseTimePart(s, &pos);
-        try skipOffset(s, &pos);
-    }
+    if (month < 1 or month > 12) return error.RangeError;
+    if (day < 1 or day > 31) return error.RangeError;
+
     try skipAnnotations(s, &pos);
-    if (pos != s.len) return error.InvalidFormat;
+    if (pos != s.len) return error.RangeError;
     return .{ .month = @intCast(month), .day = @intCast(day) };
 }
 
@@ -390,7 +417,7 @@ pub fn parsePlainDateTime(s: []const u8) TemporalError!ParsedDateTime {
         try skipOffset(s, &pos);
     }
     try skipAnnotations(s, &pos);
-    if (pos != s.len) return error.InvalidFormat;
+    if (pos != s.len) return error.RangeError;
     return .{ .date = date, .time = time };
 }
 
@@ -430,9 +457,9 @@ test "parsePlainDate: extended form, signed years, trailing time/annotations" {
     try std.testing.expectEqual(ParsedDate{ .year = 2024, .month = 2, .day = 29 }, try parsePlainDate("2024-02-29[u-ca=iso8601]"));
     try std.testing.expectEqual(ParsedDate{ .year = 12345, .month = 1, .day = 1 }, try parsePlainDate("+012345-01-01"));
     try std.testing.expectEqual(ParsedDate{ .year = -1, .month = 1, .day = 1 }, try parsePlainDate("-000001-01-01"));
-    try std.testing.expectError(error.InvalidFormat, parsePlainDate("2024-02-29[u-ca=hebrew]"));
-    try std.testing.expectError(error.InvalidFormat, parsePlainDate("2024-2-29"));
-    try std.testing.expectError(error.InvalidFormat, parsePlainDate(""));
+    try std.testing.expectError(error.RangeError, parsePlainDate("2024-02-29[u-ca=unknown]"));
+    try std.testing.expectError(error.RangeError, parsePlainDate("2024-2-29"));
+    try std.testing.expectError(error.RangeError, parsePlainDate(""));
 }
 
 test "parsePlainTime: time-only and date-time forms" {

@@ -1,16 +1,22 @@
 .{
     .name = .ztemporal,
     .version = "0.1.0",
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0",
     .fingerprint = 0x337a7178fefc5ff6,
-    .description = "TC39 Temporal API (PlainDate/PlainTime/PlainDateTime/Duration/Instant/PlainYearMonth/PlainMonthDay/ZonedDateTime) implemented from scratch in pure Zig",
+    .description = "Typed TC39 Temporal implementation for Zig, with optional ICU calendars and localization",
     .paths = .{
         "build.zig",
         "build.zig.zon",
         "src/",
+        "tests/",
+        "scripts/",
+        "MIGRATION.md",
         "README.md",
     },
     .dependencies = .{
-        .zdate = .{ .path = "../z-date" },
+        .zdate = .{
+            .url = "git+https://github.com/carlos-sweb/z-date.git#bd26f9bd10c2722f323cbdfc83c5eb22d9a0daa5",
+            .hash = "zdate-0.1.0-f1RpEVdsGwCmDTexU2mlhrlvSTjYAKf1tWxYzvq254nj",
+        },
     },
 }

@@ -13,46 +13,45 @@ const errors = @import("errors.zig");
 const TemporalError = errors.TemporalError;
 
 pub const RawDuration = struct {
-    years: i64 = 0,
-    months: i64 = 0,
-    weeks: i64 = 0,
-    days: i64 = 0,
-    hours: i64 = 0,
-    minutes: i64 = 0,
-    seconds: i64 = 0,
-    milliseconds: i64 = 0,
-    microseconds: i64 = 0,
-    nanoseconds: i64 = 0,
+    years: i128 = 0,
+    months: i128 = 0,
+    weeks: i128 = 0,
+    days: i128 = 0,
+    hours: i128 = 0,
+    minutes: i128 = 0,
+    seconds: i128 = 0,
+    milliseconds: i128 = 0,
+    microseconds: i128 = 0,
+    nanoseconds: i128 = 0,
 };
 
 fn isDigit(c: u8) bool {
     return c >= '0' and c <= '9';
 }
 
-fn readInt(s: []const u8, pos: *usize) TemporalError!i64 {
+fn readInt(s: []const u8, pos: *usize) TemporalError!i128 {
     const start = pos.*;
     while (pos.* < s.len and isDigit(s[pos.*])) pos.* += 1;
-    if (pos.* == start) return error.InvalidFormat;
-    return std.fmt.parseInt(i64, s[start..pos.*], 10) catch return error.InvalidFormat;
+    if (pos.* == start) return error.RangeError;
+    return std.fmt.parseInt(i128, s[start..pos.*], 10) catch return error.RangeError;
 }
 
 /// Reads `.`/`,` + 1-9 digits, returned as a numerator over 10^9 (i.e. the
 /// fractional value is `numerator / 1_000_000_000`). More than 9 digits is
 /// a parse error (ground-truthed: real Temporal rejects a 10th fractional
-/// digit outright, unlike the Plain*/`iso_string.zig` parser, which
-/// silently truncates extra digits beyond nanosecond precision).
+/// digit outright, as do the date/time parsers).
 fn readFractionNumerator(s: []const u8, pos: *usize) TemporalError!u64 {
     const start = pos.*;
     var count: usize = 0;
     while (pos.* < s.len and isDigit(s[pos.*])) : (count += 1) pos.* += 1;
-    if (count == 0 or count > 9) return error.InvalidFormat;
-    var num = std.fmt.parseInt(u64, s[start..pos.*], 10) catch return error.InvalidFormat;
+    if (count == 0 or count > 9) return error.RangeError;
+    var num = std.fmt.parseInt(u64, s[start..pos.*], 10) catch return error.RangeError;
     var i: usize = count;
     while (i < 9) : (i += 1) num *= 10;
     return num;
 }
 
-const ValueAndFrac = struct { whole: i64, frac_num: u64 = 0, has_frac: bool = false };
+const ValueAndFrac = struct { whole: i128, frac_num: u64 = 0, has_frac: bool = false };
 
 fn readValueAndOptionalFrac(s: []const u8, pos: *usize) TemporalError!ValueAndFrac {
     const whole = try readInt(s, pos);
@@ -64,7 +63,7 @@ fn readValueAndOptionalFrac(s: []const u8, pos: *usize) TemporalError!ValueAndFr
     return .{ .whole = whole };
 }
 
-fn applySign(value: i64, negative: bool) i64 {
+fn applySign(value: i128, negative: bool) i128 {
     return if (negative) -value else value;
 }
 
@@ -75,7 +74,7 @@ pub fn parseDuration(s: []const u8) TemporalError!RawDuration {
         negative = s[pos] == '-';
         pos += 1;
     }
-    if (pos >= s.len or (s[pos] != 'P' and s[pos] != 'p')) return error.InvalidFormat;
+    if (pos >= s.len or (s[pos] != 'P' and s[pos] != 'p')) return error.RangeError;
     pos += 1;
 
     var result = RawDuration{};
@@ -90,10 +89,10 @@ pub fn parseDuration(s: []const u8) TemporalError!RawDuration {
     var last_date_rank: u8 = 0;
     while (pos < s.len and s[pos] != 'T' and s[pos] != 't') {
         const value = try readInt(s, &pos);
-        if (pos >= s.len) return error.InvalidFormat;
+        if (pos >= s.len) return error.RangeError;
         const c = s[pos .. pos + 1];
-        const rank = DATE_RANK.get(c) orelse return error.InvalidFormat;
-        if (rank <= last_date_rank) return error.InvalidFormat;
+        const rank = DATE_RANK.get(c) orelse return error.RangeError;
+        if (rank <= last_date_rank) return error.RangeError;
         last_date_rank = rank;
         pos += 1;
         any_component = true;
@@ -115,10 +114,10 @@ pub fn parseDuration(s: []const u8) TemporalError!RawDuration {
         var saw_time_component = false;
         while (pos < s.len) {
             const vf = try readValueAndOptionalFrac(s, &pos);
-            if (pos >= s.len) return error.InvalidFormat;
+            if (pos >= s.len) return error.RangeError;
             const c = s[pos .. pos + 1];
-            const rank = TIME_RANK.get(c) orelse return error.InvalidFormat;
-            if (rank <= last_time_rank) return error.InvalidFormat;
+            const rank = TIME_RANK.get(c) orelse return error.RangeError;
+            if (rank <= last_time_rank) return error.RangeError;
             last_time_rank = rank;
             pos += 1;
             any_component = true;
@@ -128,7 +127,7 @@ pub fn parseDuration(s: []const u8) TemporalError!RawDuration {
                 1 => { // H
                     result.hours = applySign(vf.whole, negative);
                     if (vf.has_frac) {
-                        const extra_ns: i64 = @intCast(vf.frac_num * 3600);
+                        const extra_ns: i128 = @intCast(vf.frac_num * 3600);
                         const extra_minutes = @divTrunc(extra_ns, 60_000_000_000);
                         const rem1 = @rem(extra_ns, 60_000_000_000);
                         const extra_seconds = @divTrunc(rem1, 1_000_000_000);
@@ -138,26 +137,26 @@ pub fn parseDuration(s: []const u8) TemporalError!RawDuration {
                         result.milliseconds = applySign(@divTrunc(rem2, 1_000_000), negative);
                         result.microseconds = applySign(@mod(@divTrunc(rem2, 1_000), 1000), negative);
                         result.nanoseconds = applySign(@mod(rem2, 1000), negative);
-                        if (pos != s.len) return error.InvalidFormat;
+                        if (pos != s.len) return error.RangeError;
                     }
                 },
                 2 => { // M
                     result.minutes = applySign(vf.whole, negative);
                     if (vf.has_frac) {
-                        const extra_ns: i64 = @intCast(vf.frac_num * 60);
+                        const extra_ns: i128 = @intCast(vf.frac_num * 60);
                         const extra_seconds = @divTrunc(extra_ns, 1_000_000_000);
                         const rem2 = @rem(extra_ns, 1_000_000_000);
                         result.seconds = applySign(extra_seconds, negative);
                         result.milliseconds = applySign(@divTrunc(rem2, 1_000_000), negative);
                         result.microseconds = applySign(@mod(@divTrunc(rem2, 1_000), 1000), negative);
                         result.nanoseconds = applySign(@mod(rem2, 1000), negative);
-                        if (pos != s.len) return error.InvalidFormat;
+                        if (pos != s.len) return error.RangeError;
                     }
                 },
                 3 => { // S
                     result.seconds = applySign(vf.whole, negative);
                     if (vf.has_frac) {
-                        const rem2: i64 = @intCast(vf.frac_num);
+                        const rem2: i128 = @intCast(vf.frac_num);
                         result.milliseconds = applySign(@divTrunc(rem2, 1_000_000), negative);
                         result.microseconds = applySign(@mod(@divTrunc(rem2, 1_000), 1000), negative);
                         result.nanoseconds = applySign(@mod(rem2, 1000), negative);
@@ -166,58 +165,58 @@ pub fn parseDuration(s: []const u8) TemporalError!RawDuration {
                 else => unreachable,
             }
         }
-        if (!saw_time_component) return error.InvalidFormat; // bare "T"
+        if (!saw_time_component) return error.RangeError; // bare "T"
     }
 
-    if (!any_component) return error.InvalidFormat; // bare "P"
-    if (pos != s.len) return error.InvalidFormat;
+    if (!any_component) return error.RangeError; // bare "P"
+    if (pos != s.len) return error.RangeError;
     return result;
 }
 
 test "parseDuration: full component set, sign, case-insensitivity" {
     const d = try parseDuration("P1Y2M3W4DT5H6M7S");
-    try std.testing.expectEqual(@as(i64, 1), d.years);
-    try std.testing.expectEqual(@as(i64, 2), d.months);
-    try std.testing.expectEqual(@as(i64, 3), d.weeks);
-    try std.testing.expectEqual(@as(i64, 4), d.days);
-    try std.testing.expectEqual(@as(i64, 5), d.hours);
-    try std.testing.expectEqual(@as(i64, 6), d.minutes);
-    try std.testing.expectEqual(@as(i64, 7), d.seconds);
+    try std.testing.expectEqual(@as(i128, 1), d.years);
+    try std.testing.expectEqual(@as(i128, 2), d.months);
+    try std.testing.expectEqual(@as(i128, 3), d.weeks);
+    try std.testing.expectEqual(@as(i128, 4), d.days);
+    try std.testing.expectEqual(@as(i128, 5), d.hours);
+    try std.testing.expectEqual(@as(i128, 6), d.minutes);
+    try std.testing.expectEqual(@as(i128, 7), d.seconds);
 
     const lower = try parseDuration("p1d");
-    try std.testing.expectEqual(@as(i64, 1), lower.days);
+    try std.testing.expectEqual(@as(i128, 1), lower.days);
 
     const neg = try parseDuration("-P1D");
-    try std.testing.expectEqual(@as(i64, -1), neg.days);
+    try std.testing.expectEqual(@as(i128, -1), neg.days);
 
     const explicit_plus = try parseDuration("+P1D");
-    try std.testing.expectEqual(@as(i64, 1), explicit_plus.days);
+    try std.testing.expectEqual(@as(i128, 1), explicit_plus.days);
 }
 
 test "parseDuration: fractional H cascades to M/S/ms/us/ns" {
     const d = try parseDuration("PT1.5H");
-    try std.testing.expectEqual(@as(i64, 1), d.hours);
-    try std.testing.expectEqual(@as(i64, 30), d.minutes);
-    try std.testing.expectEqual(@as(i64, 0), d.seconds);
+    try std.testing.expectEqual(@as(i128, 1), d.hours);
+    try std.testing.expectEqual(@as(i128, 30), d.minutes);
+    try std.testing.expectEqual(@as(i128, 0), d.seconds);
 }
 
 test "parseDuration: fractional S cascades to ms/us/ns, comma accepted" {
     const d = try parseDuration("PT1.123456789S");
-    try std.testing.expectEqual(@as(i64, 1), d.seconds);
-    try std.testing.expectEqual(@as(i64, 123), d.milliseconds);
-    try std.testing.expectEqual(@as(i64, 456), d.microseconds);
-    try std.testing.expectEqual(@as(i64, 789), d.nanoseconds);
+    try std.testing.expectEqual(@as(i128, 1), d.seconds);
+    try std.testing.expectEqual(@as(i128, 123), d.milliseconds);
+    try std.testing.expectEqual(@as(i128, 456), d.microseconds);
+    try std.testing.expectEqual(@as(i128, 789), d.nanoseconds);
 
     const comma = try parseDuration("PT1,5S");
-    try std.testing.expectEqual(@as(i64, 500), comma.milliseconds);
+    try std.testing.expectEqual(@as(i128, 500), comma.milliseconds);
 }
 
 test "parseDuration: rejects bad grammar" {
-    try std.testing.expectError(error.InvalidFormat, parseDuration("P"));
-    try std.testing.expectError(error.InvalidFormat, parseDuration("PT"));
-    try std.testing.expectError(error.InvalidFormat, parseDuration("P3D1Y"));
-    try std.testing.expectError(error.InvalidFormat, parseDuration("P1.5D"));
-    try std.testing.expectError(error.InvalidFormat, parseDuration("PT1.12345678901S"));
-    try std.testing.expectError(error.InvalidFormat, parseDuration("P1D1H"));
-    try std.testing.expectError(error.InvalidFormat, parseDuration(""));
+    try std.testing.expectError(error.RangeError, parseDuration("P"));
+    try std.testing.expectError(error.RangeError, parseDuration("PT"));
+    try std.testing.expectError(error.RangeError, parseDuration("P3D1Y"));
+    try std.testing.expectError(error.RangeError, parseDuration("P1.5D"));
+    try std.testing.expectError(error.RangeError, parseDuration("PT1.12345678901S"));
+    try std.testing.expectError(error.RangeError, parseDuration("P1D1H"));
+    try std.testing.expectError(error.RangeError, parseDuration(""));
 }
