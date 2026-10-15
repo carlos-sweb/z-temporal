@@ -74,18 +74,21 @@ pub fn validateIncrement(unit: Unit, increment: u32) TemporalError!void {
     }
 }
 
-/// Same divisibility rule as `validateIncrement`, but the cap is
-/// INCLUSIVE of the full cycle length -- ground-truthed that `Instant`
-/// (which never wraps, unlike a clock-of-day value) allows
-/// `roundingIncrement: 24` for `smallestUnit: "hour"` (`25` is the first
-/// rejected value), where `PlainTime`/`PlainDateTime.round` reject `24`
-/// itself. Used only by `Instant.round`.
+/// Instant.round accepts increments that divide a full 24-hour day,
+/// including the day itself, rather than the next clock-field cycle.
+/// The shared JavaScript option limit is still 1,000,000,000.
 pub fn validateIncrementInclusive(unit: Unit, increment: u32) TemporalError!void {
     if (increment < 1 or increment > 1_000_000_000) return error.RangeError;
-    if (cycleLength(unit)) |cycle| {
-        if (increment > cycle) return error.RangeError;
-        if (cycle % increment != 0) return error.RangeError;
-    }
+    const per_day: u64 = switch (unit) {
+        .hour => 24,
+        .minute => 1_440,
+        .second => 86_400,
+        .millisecond => 86_400_000,
+        .microsecond => 86_400_000_000,
+        .nanosecond => 86_400_000_000_000,
+        else => return error.RangeError,
+    };
+    if (increment > per_day or per_day % increment != 0) return error.RangeError;
 }
 
 pub const ResolvedUnits = struct { largest: Unit, smallest: Unit };

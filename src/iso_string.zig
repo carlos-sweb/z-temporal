@@ -333,7 +333,8 @@ pub fn parsePlainTime(s: []const u8) TemporalError!ParsedTime {
     }
     const time = try parseTimePart(s, &pos);
     try skipOffset(s, &pos);
-    try skipAnnotations(s, &pos);
+    // PlainTime ignores calendar identifiers, including critical annotations.
+    try annotations(s, &pos, false);
     if (pos != s.len) return error.RangeError;
     return time;
 }

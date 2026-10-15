@@ -122,3 +122,38 @@ test "public API: toZonedDateTimeISO" {
     defer allocator.free(s);
     try std.testing.expectEqualStrings("2024-06-15T12:00:00-04:00[America/New_York]", s);
 }
+
+test "test262: Instant.round increments divide a full day" {
+    const instant = try Instant.from(.{ .string = "1976-11-18T14:23:30.123456789Z" });
+    const next_day = try Instant.from(.{ .string = "1976-11-19T00:00:00Z" });
+    const Case = struct { unit: ztemporal.Unit, increments: []const u32 };
+    const cases = [_]Case{
+        .{ .unit = .hour, .increments = &.{ 1, 2, 4, 6, 8, 12, 24 } },
+        .{ .unit = .minute, .increments = &.{ 1, 5, 10, 20, 30, 40, 80, 120, 720, 1440 } },
+        .{ .unit = .second, .increments = &.{ 1, 5, 10, 20, 25, 30, 50, 100, 400, 864, 86400 } },
+        .{ .unit = .millisecond, .increments = &.{ 1, 5, 10, 20, 25, 30, 50, 100, 86_400_000 } },
+        .{ .unit = .microsecond, .increments = &.{ 1, 5, 10, 20, 25, 30, 50, 100 } },
+        .{ .unit = .nanosecond, .increments = &.{ 1, 5, 10, 20, 25, 30, 50, 100, 1_000_000_000 } },
+    };
+    for (cases) |case| for (case.increments) |increment| {
+        _ = try instant.round(.{ .smallestUnit = case.unit, .roundingIncrement = increment });
+    };
+    for ([_]Case{
+        .{ .unit = .hour, .increments = &.{24} },
+        .{ .unit = .minute, .increments = &.{1440} },
+        .{ .unit = .second, .increments = &.{86400} },
+        .{ .unit = .millisecond, .increments = &.{86_400_000} },
+    }) |case| {
+        const actual = try instant.round(.{ .smallestUnit = case.unit, .roundingIncrement = case.increments[0] });
+        try std.testing.expect(Instant.equals(next_day, actual));
+    }
+    for ([_]Case{
+        .{ .unit = .hour, .increments = &.{ 0, 7, 25 } },
+        .{ .unit = .minute, .increments = &.{ 7, 1441 } },
+        .{ .unit = .second, .increments = &.{ 7, 86401 } },
+        .{ .unit = .nanosecond, .increments = &.{1_000_000_001} },
+    }) |case| for (case.increments) |increment| {
+        try std.testing.expectError(error.RangeError, instant.round(.{ .smallestUnit = case.unit, .roundingIncrement = increment }));
+    };
+    try std.testing.expectError(error.RangeError, (try ztemporal.PlainTime.init(12, 0, 0, 0, 0, 0)).round(.{ .smallestUnit = .minute, .roundingIncrement = 1440 }));
+}

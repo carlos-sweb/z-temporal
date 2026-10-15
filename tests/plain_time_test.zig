@@ -117,3 +117,34 @@ test "until: rejects a date unit (PlainTime has no date component)" {
     const b = try PlainTime.init(5, 0, 0, 0, 0, 0);
     try std.testing.expectError(error.RangeError, a.until(b, .{ .largestUnit = .day }));
 }
+
+test "test262: PlainTime calendar annotations are ignored by from, equals, since and until" {
+    const expected = try PlainTime.init(12, 34, 56, 987, 654, 321);
+    const inputs = [_][]const u8{
+        "12:34:56.987654321[u-ca=iso8601]",
+        "12:34:56.987654321[UTC][u-ca=iso8601]",
+        "12:34:56.987654321[!u-ca=iso8601]",
+        "12:34:56.987654321[UTC][!u-ca=iso8601]",
+        "T12:34:56.987654321[u-ca=iso8601]",
+        "T12:34:56.987654321[UTC][u-ca=iso8601]",
+        "T12:34:56.987654321[!u-ca=iso8601]",
+        "T12:34:56.987654321[UTC][!u-ca=iso8601]",
+        "1970-01-01T12:34:56.987654321[u-ca=iso8601]",
+        "1970-01-01T12:34:56.987654321[UTC][u-ca=iso8601]",
+        "1970-01-01T12:34:56.987654321[!u-ca=iso8601]",
+        "1970-01-01T12:34:56.987654321[UTC][!u-ca=iso8601]",
+        "12:34:56.987654321[u-ca=hebrew]",
+        "12:34:56.987654321[u-ca=unknown]",
+        "12:34:56.987654321[!u-ca=unknown]",
+        "1970-01-01T12:34:56.987654321[u-ca=iso8601][u-ca=discord]",
+    };
+    for (inputs) |input| {
+        const actual = try PlainTime.from(.{ .string = input }, .{});
+        try std.testing.expect(PlainTime.equals(expected, actual));
+        try std.testing.expect((try expected.since(actual, .{})).blank());
+        try std.testing.expect((try expected.until(actual, .{})).blank());
+    }
+    for ([_][]const u8{ "12:34[!foo=bar]", "12:34[u-ca=]", "12:34[u-ca=iso8601" }) |input| {
+        try std.testing.expectError(error.RangeError, PlainTime.from(.{ .string = input }, .{}));
+    }
+}

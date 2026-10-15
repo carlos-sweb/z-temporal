@@ -117,13 +117,9 @@ pub const Instant = struct {
         return plain_time.decomposeTimeDiff(diff_ns, resolved, options.roundingIncrement, options.roundingMode);
     }
 
-    /// `smallestUnit` required (no default), hour..nanosecond only.
-    /// `roundingIncrement`'s cap is INCLUSIVE of the full cycle length
-    /// here (`validateIncrementInclusive`) -- the headline difference
-    /// from `PlainTime`/`PlainDateTime.round`, ground-truthed:
-    /// `Instant` never wraps, so `hour:24` ("round to the nearest whole
-    /// day-equivalent") is meaningful, unlike a wrapping clock value
-    /// where the full cycle is degenerate.
+    /// `smallestUnit` is required and must be hour..nanosecond.
+    /// Increments must divide a full day, inclusive, unlike the clock-field
+    /// cycle used by PlainTime and PlainDateTime.
     pub fn round(self: Instant, options: rounding.RoundOptions) TemporalError!Instant {
         const smallest = options.smallestUnit orelse return error.RangeError;
         if (!rounding.isTimeUnit(smallest)) return error.RangeError;

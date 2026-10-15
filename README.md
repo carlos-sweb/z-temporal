@@ -6,6 +6,21 @@ A typed Zig implementation of the [TC39 Temporal API](https://tc39.es/proposal-t
 
 Version 0.1.0 changes the public API. See [MIGRATION.md](MIGRATION.md).
 
+## Release 0.2.0
+
+- PlainTime ignores calendar identifiers in ISO string annotations, including
+  unknown identifiers and critical calendar annotations. Malformed annotations
+  and unsupported critical non-calendar extensions still produce RangeError.
+- Instant.round accepts rounding increments that divide a full 24-hour day,
+  rather than limiting minutes and seconds to their clock-field cycles.
+  The shared rounding-increment option limit remains 1,000,000,000.
+- Regression coverage addresses four PlainTime and three Instant Test262 failures,
+  with additional comparisons against native Node Temporal. All seven original
+  tests pass with z-interpreter v0.2.0 in an isolated build using this release.
+
+These fixes require consumers to update their z-temporal dependency. They do not
+complete the JavaScript bindings in z-interpreter or establish full Test262 parity.
+
 ## API documentation
 
 Browse the [Zig API docs](https://carlos-sweb.github.io/z-temporal/). GitHub Pages rebuilds them automatically on each push to `master`.

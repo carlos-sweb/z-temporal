@@ -6,6 +6,14 @@ console.log(JSON.stringify({node:process.version,icu:process.versions.icu,tz:pro
 const cases = [];
 const add = (kind,op,a,b,options={}) => cases.push({kind,op,a,...(b===undefined?{}:{b}),options});
 for (const [kind,values] of Object.entries({PlainDate:['20240229','2024-02-29','2024-02-29[!foo=bar]','2024-02-30','-000000-01-01'],PlainTime:['12','T12','1234','123456','202402','T202402','00:00[U-CA=iso8601]','T00:00[u-CA=iso8601]','00:00[FOO=bar]','00:00[!foo=bar]','00:00[foo=_bar]','12:00:00.1234567890','12:00:60','T0102','0102','123456.123','12:00Z'],PlainDateTime:['-271821-04-19T00:00:00','-271821-04-19T00:00:00.000000001','20240229T123456','2024-02-29T12:00'],PlainYearMonth:['202402','2024-02','2024-02-30','2024-02T12:00'],PlainMonthDay:['02-29T12:00','--02-29T12:00','--0229','02-29','20230229'],Instant:['20240229T123456Z','2024-02-29T12:00Z[!foo=bar]'],Duration:['PT9007199254740993N','PT0.1S','P1Y','PT10000000000000000000S'],ZonedDateTime:['2024-02-29T12:00+05:30[+05:30]','2024-02-29T12:00Z[America/New_York]','1880-01-01T12:00+00:09[Europe/Paris]','2024-11-03T01:30-05:00[America/New_York]']})) for(const a of values) add(kind,'from',a);
+// Regression coverage for the seven Test262 failures fixed in v0.2.0.
+for (const a of ['12:34:56.987654321[u-ca=hebrew]', '12:34:56.987654321[u-ca=unknown]', '12:34:56.987654321[!u-ca=unknown]', '1970-01-01T12:34:56.987654321[u-ca=iso8601][u-ca=discord]']) {
+ add('PlainTime', 'from', a);
+ for (const op of ['until', 'since']) add('PlainTime', op, '12:34:56.987654321', a);
+}
+for (const [smallestUnit, increments] of Object.entries({hour:[24,25],minute:[40,80,1440,1441],second:[50,864,86400,86401],millisecond:[86_400_000],microsecond:[100],nanosecond:[1_000_000_000,1_000_000_001]})) {
+ for (const roundingIncrement of increments) add('Instant','round','1976-11-18T14:23:30.123456789Z',undefined,{smallestUnit,roundingIncrement});
+}
 for(const mode of ['ceil','floor','trunc','expand','halfCeil','halfFloor','halfTrunc','halfExpand','halfEven']) {
  for(const [a,b] of [['2024-05-29','2024-01-10'],['2024-01-31','2024-03-01'],['2024-03-01','2024-01-31']]) for(const smallestUnit of ['week','month','year']) for(const op of ['until','since']) add('PlainDate',op,a,b,{largestUnit:'year',smallestUnit,roundingMode:mode});
  for(const smallestUnit of ['week','month','year']) for(const op of ['until','since']) add('PlainDateTime',op,'2024-01-01T12:00','2024-02-15T11:59:59.999999999',{largestUnit:'year',smallestUnit,roundingMode:mode});
