@@ -146,17 +146,16 @@ pub const PlainMonthDay = struct {
         return @import("calendar.zig").displayName(self.calendar);
     }
 
-    /// `MM-DD` -- the reference year is never shown by default (matches
-    /// real Temporal: it only appears with an explicit calendar-name
-    /// request, which this repo doesn't implement as a JS-level option;
-    /// `show_calendar` reuses `reference_year` for that annotated form,
-    /// same shape as the other Plain types' `[u-ca=iso8601]` suffix).
     pub fn toLocaleString(self: PlainMonthDay, allocator: std.mem.Allocator, io: std.Io, locales: ?[]const u8, options: @import("locale.zig").LocaleOptions) TemporalError![]u8 {
         const d = self.asCalendarDate().asYMD();
         return @import("locale.zig").format(allocator, io, .monthDay, @as(f64, @floatFromInt(iso_calendar.toEpochDay(d.year, d.month, d.day))) * 86_400_000, self.calendar, null, locales, options);
     }
+    /// ISO month-days default to `MM-DD`. Non-ISO calendars retain the
+    /// reference year even when the calendar annotation is omitted.
     pub fn toString(self: PlainMonthDay, allocator: std.mem.Allocator, options: StringOptions) TemporalError![]u8 {
-        const raw = try self.formatDefault(allocator, options.calendarName == .always or options.calendarName == .critical or (options.calendarName == .auto and self.calendar != .iso8601));
+        const show_year = options.calendarName == .always or options.calendarName == .critical or self.calendar != .iso8601;
+        const show_calendar = options.calendarName == .always or options.calendarName == .critical or (options.calendarName == .auto and self.calendar != .iso8601);
+        const raw = try self.formatDefault(allocator, show_year, show_calendar);
         defer allocator.free(raw);
         return @import("format_options.zig").calendar(allocator, raw, options.calendarName == .critical);
     }
@@ -164,11 +163,12 @@ pub const PlainMonthDay = struct {
         return self.toString(allocator, .{});
     }
     pub const StringOptions = @import("format_options.zig").StringOptions;
-    fn formatDefault(self: PlainMonthDay, allocator: std.mem.Allocator, show_calendar: bool) ![]u8 {
-        if (show_calendar) {
+    fn formatDefault(self: PlainMonthDay, allocator: std.mem.Allocator, show_year: bool, show_calendar: bool) ![]u8 {
+        if (show_year) {
             var year_buf: [8]u8 = undefined;
             const year_str = iso_string.formatYear(&year_buf, self.reference_year);
-            return allocator.print("{s}-{d:0>2}-{d:0>2}[u-ca={s}]", .{ year_str, self.iso_month, self.iso_day, self.calendarId() });
+            if (show_calendar) return allocator.print("{s}-{d:0>2}-{d:0>2}[u-ca={s}]", .{ year_str, self.iso_month, self.iso_day, self.calendarId() });
+            return allocator.print("{s}-{d:0>2}-{d:0>2}", .{ year_str, self.iso_month, self.iso_day });
         }
         return allocator.print("{d:0>2}-{d:0>2}", .{ self.iso_month, self.iso_day });
     }
@@ -213,6 +213,28 @@ test "toString matches real Node byte-for-byte" {
         const s = try md.toString(allocator, .{ .calendarName = .always });
         defer allocator.free(s);
         try std.testing.expectEqualStrings("1972-02-29[u-ca=iso8601]", s);
+    }
+}
+
+test "toString preserves the non-ISO reference year when calendarName is never" {
+    const allocator = std.testing.allocator;
+    const md = PlainMonthDay{ .iso_month = 5, .iso_day = 2, .reference_year = 1972, .calendar = .buddhist };
+    const cases = .{
+        .{ .auto, "1972-05-02[u-ca=buddhist]" },
+        .{ .always, "1972-05-02[u-ca=buddhist]" },
+        .{ .critical, "1972-05-02[!u-ca=buddhist]" },
+        .{ .never, "1972-05-02" },
+    };
+    inline for (cases) |case| {
+        const text = try md.toString(allocator, .{ .calendarName = case[0] });
+        defer allocator.free(text);
+        try std.testing.expectEqualStrings(case[1], text);
+    }
+    if (@import("build_options").intl) {
+        const constructed = try PlainMonthDay.init(5, 2, "buddhist", 1972);
+        const text = try constructed.toString(allocator, .{ .calendarName = .never });
+        defer allocator.free(text);
+        try std.testing.expectEqualStrings("1972-05-02", text);
     }
 }
 

@@ -6,6 +6,12 @@ A typed Zig implementation of the [TC39 Temporal API](https://tc39.es/proposal-t
 
 Version 0.1.0 changes the public API. See [MIGRATION.md](MIGRATION.md).
 
+## Release 0.2.1
+
+- `PlainMonthDay.toString` keeps the ISO reference year for non-ISO calendars
+  when `calendarName` is `never`, while omitting the calendar annotation.
+- The four `calendarName` modes have native regression coverage.
+
 ## Release 0.2.0
 
 - PlainTime ignores calendar identifiers in ISO string annotations, including
