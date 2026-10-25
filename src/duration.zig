@@ -305,6 +305,10 @@ pub const Duration = struct {
         return u == .year or u == .month or u == .week;
     }
 
+    fn isCalendarRoundingUnit(u: rounding.Unit) bool {
+        return u == .year or u == .month or u == .week or u == .day;
+    }
+
     /// `relativeTo` is mandatory whenever a year/month/week unit is
     /// INVOLVED, whether that's a field already present on `self` or one
     /// of the requested `largest`/`smallest` units -- ground-truthed:
@@ -384,6 +388,10 @@ pub const Duration = struct {
         const smallest = options.smallestUnit orelse .nanosecond;
         if (@backingInt(largest) > @backingInt(smallest)) return error.RangeError;
         try rounding.validateIncrement(smallest, options.roundingIncrement);
+        // Calendar increments greater than one cannot also be balanced into
+        // a coarser calendar unit: the increment's boundary is relative to
+        // the start date, not an independently balanceable fixed radix.
+        if (options.roundingIncrement != 1 and isCalendarRoundingUnit(smallest) and largest != smallest) return error.RangeError;
         if (options.relativeTo) |rt| {
             const start = try anchor(rt, options.allocator, options.io);
             const target = try endpoint(self, rt, options.allocator, options.io);
@@ -656,6 +664,40 @@ test "compare: non-calendar durations compare by total nanoseconds" {
     const a = try Duration.init(0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
     const b = try Duration.init(0, 0, 0, 1, 0, 0, 0, 0, 0, 0);
     try std.testing.expectEqual(std.math.Order.lt, try Duration.compare(a, b, .{}));
+}
+
+test "round rejects calendar increments that also balance to a larger unit" {
+    const relative_to = try plain_date.PlainDate.init(2024, 1, 1, null);
+    const months = try Duration.init(0, 9, 0, 0, 0, 0, 0, 0, 0, 0);
+    const rounded_months = try months.round(.{
+        .relativeTo = .{ .plainDate = relative_to },
+        .smallestUnit = .month,
+        .roundingIncrement = 8,
+        .roundingMode = .ceil,
+    });
+    try std.testing.expectEqual(@as(f64, 16), rounded_months.months);
+    const month_and_day = try Duration.init(0, 1, 0, 1, 0, 0, 0, 0, 0, 0);
+    const rounded_weeks = try month_and_day.round(.{
+        .relativeTo = .{ .plainDate = relative_to },
+        .largestUnit = .week,
+        .smallestUnit = .week,
+        .roundingIncrement = 6,
+        .roundingMode = .ceil,
+    });
+    try std.testing.expectEqual(@as(f64, 6), rounded_weeks.weeks);
+    try std.testing.expectError(error.RangeError, months.round(.{
+        .relativeTo = .{ .plainDate = relative_to },
+        .largestUnit = .year,
+        .smallestUnit = .month,
+        .roundingIncrement = 8,
+    }));
+    const days = try Duration.init(0, 0, 0, 31, 0, 0, 0, 0, 0, 0);
+    try std.testing.expectError(error.RangeError, days.round(.{
+        .relativeTo = .{ .plainDate = relative_to },
+        .largestUnit = .week,
+        .smallestUnit = .day,
+        .roundingIncrement = 30,
+    }));
 }
 
 test "add/subtract: throws on any calendar-unit operand, no exception for relativeTo" {

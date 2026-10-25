@@ -87,7 +87,10 @@ fn window(start: PDT, origin: i128, raw: D, sign: i128, unit: r.Unit, increment:
         },
         else => unreachable,
     }
-    return .{ .low = low, .high = high, .lowEpoch = if (value == 0) origin else try at(start, low, ctx), .highEpoch = try at(start, high, ctx), .rank = value };
+    // `value == 0` only says the current *smallest* unit has no residue.
+    // `low` can still include a balanced year/month/week prefix, which must
+    // be applied before establishing the rounding window.
+    return .{ .low = low, .high = high, .lowEpoch = if (low.blank()) origin else try at(start, low, ctx), .highEpoch = try at(start, high, ctx), .rank = value };
 }
 pub fn total(start: PDT, end: PDT, origin: i128, target: i128, unit: r.Unit, ctx: Context) E!f64 {
     if (origin == target) return 0;
@@ -195,4 +198,17 @@ pub fn negateMode(mode: r.RoundingMode) r.RoundingMode {
         .halfFloor => .halfCeil,
         else => mode,
     };
+}
+
+test "difference keeps balanced calendar units at an exact smaller-unit boundary" {
+    const start: PDT = .{ .date = try date.PlainDate.init(2012, 1, 1, null) };
+    const end: PDT = .{ .date = try date.PlainDate.init(2012, 2, 1, null) };
+    const result = try difference(start, end, try epoch(start, .{}), try epoch(end, .{}), .{
+        .largestUnit = .month,
+        .smallestUnit = .week,
+        .roundingMode = .ceil,
+    }, .{});
+    try std.testing.expectEqual(@as(f64, 1), result.months);
+    try std.testing.expectEqual(@as(f64, 0), result.weeks);
+    try std.testing.expectEqual(@as(f64, 0), result.days);
 }
