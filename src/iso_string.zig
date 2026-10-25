@@ -354,7 +354,10 @@ pub fn parsePlainTime(s: []const u8) TemporalError!ParsedTime {
         pos += 1;
     }
     const time = try parseTimePart(s, &pos);
-    if (!prefixed and pos < s.len and (s[pos] == '+' or s[pos] == '-')) return error.RangeError;
+    // A sign following only `HH` is ambiguous with a date-like `HH-DD`
+    // spelling and needs the `T` designator. A complete time-only form,
+    // however, may carry an offset with or without that designator.
+    if (!prefixed and pos == 2 and pos < s.len and (s[pos] == '+' or s[pos] == '-')) return error.RangeError;
     try skipOffset(s, &pos);
     // PlainTime ignores calendar identifiers, including critical annotations.
     try annotations(s, &pos, false, false);
@@ -500,6 +503,11 @@ test "ISO parser requires T before a time-only offset and restricts zone annotat
     const time = try parsePlainTime("12:14");
     try std.testing.expectEqual(@as(u8, 12), time.hour);
     try std.testing.expectEqual(@as(u8, 14), time.minute);
+    _ = try parsePlainTime("T12:14");
+    _ = try parsePlainTime("T12:14+00:00");
+    _ = try parsePlainTime("T12:14[UTC]");
+    _ = try parsePlainTime("12:14+00:00");
+    _ = try parsePlainTime("12:14[UTC]");
     try std.testing.expectError(error.RangeError, parsePlainTime("12-14"));
 
     // A leading Instant offset may contain seconds, but a bracketed time
