@@ -273,9 +273,11 @@ pub const ParsedZonedDateTime = struct { date: ParsedDate, time: ParsedTime, off
 pub fn parseZonedDateTime(s: []const u8) TemporalError!ParsedZonedDateTime {
     var pos: usize = 0;
     const date = try parseDatePart(s, &pos);
-    if (pos >= s.len or (s[pos] != 'T' and s[pos] != 't' and s[pos] != ' ')) return error.RangeError;
-    pos += 1;
-    const time = try parseTimePart(s, &pos);
+    var time = ParsedTime{};
+    if (pos < s.len and (s[pos] == 'T' or s[pos] == 't' or s[pos] == ' ')) {
+        pos += 1;
+        time = try parseTimePart(s, &pos);
+    } else if (pos >= s.len or s[pos] != '[') return error.RangeError;
 
     const is_utc = pos < s.len and (s[pos] == 'Z' or s[pos] == 'z');
     const offset_start = pos;
@@ -579,6 +581,14 @@ test "ZonedDateTime withPlainTime T-designator regression" {
     const time = try parsePlainTime("0000-00");
     try std.testing.expectEqual(@as(u8, 0), time.hour);
     try std.testing.expectEqual(@as(u8, 0), time.minute);
+}
+
+test "ZonedDateTime accepts a date-only string with a zone annotation" {
+    const parsed = try parseZonedDateTime("2020-01-01[+09:00]");
+    try std.testing.expectEqual(@as(u8, 0), parsed.time.hour);
+    try std.testing.expectEqual(@as(u8, 0), parsed.time.minute);
+    try std.testing.expectEqualStrings("+09:00", parsed.time_zone_id);
+    try std.testing.expectError(error.RangeError, parseZonedDateTime("2020-01-01"));
 }
 
 test "parsePlainDateTime: time defaults to midnight when absent" {
