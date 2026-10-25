@@ -140,7 +140,10 @@ pub const PlainYearMonth = struct {
                 start = try start.with(.{ .day = last_day }, .{});
             }
         }
-        const result = try start.add(d, overflow);
+        // ISO year-month arithmetic has no day to constrain or reject.  The
+        // overflow option therefore cannot affect a valid year/month shift.
+        _ = overflow;
+        const result = try start.add(d, .constrain);
         var buf: [4]u8 = undefined;
         return from(.{ .fields = .{ .year = result.year(), .monthCode = result.monthCode(&buf), .calendar = @tagName(result.calendar) } }, .{});
     }
@@ -253,6 +256,15 @@ test "init: constrain clamps upper bound, reject throws" {
 
 test "init: month below 1 always rejects, regardless of overflow" {
     try std.testing.expectError(error.RangeError, @import("plain_year_month.zig").regulate(2024, 0, .constrain));
+}
+
+test "add ignores overflow for ISO year-month arithmetic" {
+    const value = try PlainYearMonth.init(2024, 2, null, null);
+    const duration = try Duration.init(1, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    const constrained = try value.add(duration, .constrain);
+    const rejected = try value.add(duration, .reject);
+    try std.testing.expectEqual(constrained.iso_year, rejected.iso_year);
+    try std.testing.expectEqual(constrained.iso_month, rejected.iso_month);
 }
 
 test "init: asymmetric range boundary (day1-or-last-day rule)" {

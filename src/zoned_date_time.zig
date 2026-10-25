@@ -28,8 +28,13 @@ const NS_PER_MS: i128 = 1_000_000;
 /// deliberately excluded: those modes may turn an out-of-range wall clock
 /// into an in-range exact instant.
 fn validateLocalDateTimeRange(local_ns: i128) TemporalError!void {
-    const bound: i128 = 100_000_001 * NS_PER_DAY;
-    if (local_ns <= -bound or local_ns >= bound) return error.RangeError;
+    // A local date-time used for offset matching has a narrower lower
+    // boundary than an exact Instant.  Every time on -271821-04-19 is
+    // outside the PlainDateTime interval used by InterpretISODateTimeOffset;
+    // testing only that day's midnight accidentally admitted its later hours.
+    const min_local = @as(i128, iso_calendar.toEpochDay(-271821, 4, 20)) * NS_PER_DAY;
+    const max_local_exclusive = (@as(i128, iso_calendar.toEpochDay(275760, 9, 13)) + 1) * NS_PER_DAY;
+    if (local_ns < min_local or local_ns >= max_local_exclusive) return error.RangeError;
 }
 
 /// Governs conflicts between a given numeric offset and what the time
@@ -500,6 +505,7 @@ pub const ZonedDateTime = struct {
         const epoch_day = iso_calendar.toEpochDay(date.iso_year, date.iso_month, date.iso_day);
         const start = try startOfDayNs(allocator, io, epoch_day, self.timeZoneId());
         const end = try startOfDayNs(allocator, io, epoch_day + 1, self.timeZoneId());
+        if (start < instant_mod.MIN_EPOCH_NS or end > instant_mod.MAX_EPOCH_NS) return error.RangeError;
         return @as(f64, @floatFromInt(end - start)) / 3_600_000_000_000;
     }
 
@@ -604,10 +610,17 @@ pub const ZonedDateTime = struct {
 };
 
 test "ZonedDateTime rejects out-of-range wall clocks during offset matching" {
-    const lower = @as(i128, iso_calendar.toEpochDay(-271821, 4, 19)) * NS_PER_DAY;
+    const lower_day = @as(i128, iso_calendar.toEpochDay(-271821, 4, 19)) * NS_PER_DAY;
     const first_valid = @as(i128, iso_calendar.toEpochDay(-271821, 4, 20)) * NS_PER_DAY;
     const upper = @as(i128, iso_calendar.toEpochDay(275760, 9, 13)) * NS_PER_DAY;
-    try std.testing.expectError(error.RangeError, validateLocalDateTimeRange(lower));
+    try std.testing.expectError(error.RangeError, validateLocalDateTimeRange(lower_day));
+    try std.testing.expectError(error.RangeError, validateLocalDateTimeRange(lower_day + 23 * 3_600_000_000_000));
     try validateLocalDateTimeRange(first_valid);
     try validateLocalDateTimeRange(upper);
+}
+
+test "ZonedDateTime hoursInDay rejects an unrepresentable next-day boundary" {
+    const io = std.testing.io;
+    const max = try ZonedDateTime.init(std.testing.allocator, io, instant_mod.MAX_EPOCH_NS, "UTC", null);
+    try std.testing.expectError(error.RangeError, max.hoursInDay(std.testing.allocator, io));
 }
