@@ -109,6 +109,15 @@ pub const PlainYearMonth = struct {
         return PlainDate.from(.{ .fields = .{ .year = self.year(), .monthCode = self.monthCode(&buf), .day = 1, .calendar = @tagName(self.calendar) } }, .{});
     }
 
+    /// DifferenceTemporalPlainYearMonth builds ISO fields with day 1. At
+    /// the partial minimum year-month that day is not representable, even
+    /// though the year-month itself is constructible. Equal year-months
+    /// short-circuit to zero before that conversion.
+    fn asDifferenceDate(self: PlainYearMonth) TemporalError!PlainDate {
+        if (self.calendar == .iso8601) return PlainDate.init(self.iso_year, self.iso_month, 1, null);
+        return self.asPlainDate();
+    }
+
     /// Always constrains the day regardless of `overflow` -- ground-truthed
     /// against real Node (`day:35` on a 29-day February clamps to 29 even
     /// with `overflow:"reject"` explicitly passed).
@@ -118,8 +127,19 @@ pub const PlainYearMonth = struct {
     }
 
     pub fn add(self: PlainYearMonth, d: Duration, overflow: Overflow) TemporalError!PlainYearMonth {
+        // A year-month has no day or time component to which lower units can
+        // be applied. They are rejected rather than folded through a date.
+        if (d.weeks != 0 or d.days != 0 or d.hours != 0 or d.minutes != 0 or d.seconds != 0 or d.milliseconds != 0 or d.microseconds != 0 or d.nanoseconds != 0) return error.RangeError;
         var start = try self.asPlainDate();
-        if (d.sign() < 0) start = try start.with(.{ .day = start.daysInMonth() }, .{});
+        if (d.sign() < 0) {
+            const last_day = start.daysInMonth();
+            // The partial maximum month is representable as a year-month,
+            // but not all of its days are valid ISO dates. Do not turn a
+            // valid boundary value into an invalid date before subtracting.
+            if (iso_calendar.isInRange(start.iso_year, start.iso_month, last_day)) {
+                start = try start.with(.{ .day = last_day }, .{});
+            }
+        }
         const result = try start.add(d, overflow);
         var buf: [4]u8 = undefined;
         return from(.{ .fields = .{ .year = result.year(), .monthCode = result.monthCode(&buf), .calendar = @tagName(result.calendar) } }, .{});
@@ -138,7 +158,8 @@ pub const PlainYearMonth = struct {
         const smallest = options.smallestUnit orelse .month;
         if (!isYearOrMonthUnit(largest) or !isYearOrMonthUnit(smallest)) return error.RangeError;
         if (!@import("calendar.zig").equal(self.calendar, other.calendar)) return error.RangeError;
-        return (try self.asPlainDate()).until(try other.asPlainDate(), .{
+        if (self.iso_year == other.iso_year and self.iso_month == other.iso_month) return .{};
+        return (try self.asDifferenceDate()).until(try other.asDifferenceDate(), .{
             .largestUnit = largest,
             .smallestUnit = smallest,
             .roundingIncrement = options.roundingIncrement,
@@ -151,7 +172,8 @@ pub const PlainYearMonth = struct {
         const smallest = options.smallestUnit orelse .month;
         if (!isYearOrMonthUnit(largest) or !isYearOrMonthUnit(smallest)) return error.RangeError;
         if (!@import("calendar.zig").equal(self.calendar, other.calendar)) return error.RangeError;
-        return (try self.asPlainDate()).since(try other.asPlainDate(), .{
+        if (self.iso_year == other.iso_year and self.iso_month == other.iso_month) return .{};
+        return (try self.asDifferenceDate()).since(try other.asDifferenceDate(), .{
             .largestUnit = largest,
             .smallestUnit = smallest,
             .roundingIncrement = options.roundingIncrement,
@@ -246,13 +268,32 @@ test "toPlainDate always constrains regardless of day validity" {
     try std.testing.expectEqual(@as(u8, 29), d.iso_day);
 }
 
-test "add: delegates to PlainDate{year,month,1}, day-31 vs day-1 construction identical" {
+test "add: applies year and month units" {
     const ym = try PlainYearMonth.init(2024, 1, null, null);
-    const r1 = try ym.add(try Duration.init(0, 0, 0, 35, 0, 0, 0, 0, 0, 0), .constrain);
+    const r1 = try ym.add(try Duration.init(0, 1, 0, 0, 0, 0, 0, 0, 0, 0), .constrain);
     try std.testing.expectEqual(@as(u8, 2), r1.iso_month);
-    const r2 = try ym.add(try Duration.init(0, 0, 0, 400, 0, 0, 0, 0, 0, 0), .constrain);
+    const r2 = try ym.add(try Duration.init(1, 1, 0, 0, 0, 0, 0, 0, 0, 0), .constrain);
     try std.testing.expectEqual(@as(i32, 2025), r2.iso_year);
     try std.testing.expectEqual(@as(u8, 2), r2.iso_month);
+}
+
+test "add rejects duration units smaller than month" {
+    const ym = try PlainYearMonth.init(2024, 1, null, null);
+    try std.testing.expectError(error.RangeError, ym.add(try Duration.init(0, 0, 0, 1, 0, 0, 0, 0, 0, 0), .constrain));
+    try std.testing.expectError(error.RangeError, ym.add(try Duration.init(0, 0, 0, 0, 1, 0, 0, 0, 0, 0), .reject));
+}
+
+test "add and difference enforce partial-year-month boundaries" {
+    const last = try PlainYearMonth.init(275760, 9, null, null);
+    const previous = try last.add(try Duration.init(0, -1, 0, 0, 0, 0, 0, 0, 0, 0), .constrain);
+    try std.testing.expectEqual(@as(u8, 8), previous.iso_month);
+    try std.testing.expectError(error.RangeError, last.add(try Duration.init(0, 1, 0, 0, 0, 0, 0, 0, 0, 0), .constrain));
+
+    const minimum = try PlainYearMonth.init(-271821, 4, null, null);
+    const epoch = try PlainYearMonth.init(1970, 1, null, null);
+    _ = try minimum.until(minimum, .{});
+    try std.testing.expectError(error.RangeError, minimum.until(epoch, .{}));
+    try std.testing.expectError(error.RangeError, minimum.since(epoch, .{}));
 }
 
 test "until/since: rejects week/day units, default largestUnit is year" {

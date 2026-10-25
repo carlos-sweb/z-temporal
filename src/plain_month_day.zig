@@ -11,7 +11,10 @@ const Overflow = plain_date_mod.Overflow;
 
 pub const REFERENCE_YEAR: i32 = 1972;
 
-pub fn regulate(in_month: i32, in_day: i32, overflow: Overflow) TemporalError!PlainMonthDay {
+/// Regulate fields for a supplied ISO reference year without requiring that
+/// year itself to be representable. `PlainMonthDay.from` uses its year only
+/// to decide whether a month/day combination (notably February 29) overflows.
+fn regulateForReferenceYear(reference_year: i32, in_month: i32, in_day: i32, overflow: Overflow) TemporalError!PlainMonthDay {
     if (in_month < 1 or in_day < 1) return error.RangeError;
     var m: u8 = undefined;
     if (in_month > 12) {
@@ -20,7 +23,7 @@ pub fn regulate(in_month: i32, in_day: i32, overflow: Overflow) TemporalError!Pl
     } else {
         m = @intCast(in_month);
     }
-    const max_day = iso_calendar.daysInMonth(REFERENCE_YEAR, m);
+    const max_day = iso_calendar.daysInMonth(reference_year, m);
     var d: u8 = undefined;
     if (in_day > max_day) {
         if (overflow == .reject) return error.RangeError;
@@ -29,6 +32,10 @@ pub fn regulate(in_month: i32, in_day: i32, overflow: Overflow) TemporalError!Pl
         d = @intCast(in_day);
     }
     return .{ .iso_month = m, .iso_day = d, .reference_year = REFERENCE_YEAR };
+}
+
+pub fn regulate(in_month: i32, in_day: i32, overflow: Overflow) TemporalError!PlainMonthDay {
+    return regulateForReferenceYear(REFERENCE_YEAR, in_month, in_day, overflow);
 }
 
 pub const PlainMonthDay = struct {
@@ -74,8 +81,9 @@ pub const PlainMonthDay = struct {
                 const id = try calendars.parse(f.calendar orelse "iso8601");
                 const d = f.day orelse return error.TypeError;
                 if (id == .iso8601) {
-                    const date = try PlainDate.from(.{ .fields = .{ .year = f.year orelse REFERENCE_YEAR, .month = f.month, .monthCode = f.monthCode, .day = d } }, .{ .overflow = options.overflow });
-                    break :blk regulate(date.iso_month, date.iso_day, .reject);
+                    const year = f.year orelse REFERENCE_YEAR;
+                    const month = try calendars.isoMonth(f.monthCode, f.month);
+                    break :blk regulateForReferenceYear(year, month, d, options.overflow);
                 }
                 if (f.monthCode == null and f.year == null and f.era == null and f.eraYear == null) return error.TypeError;
                 var code_buf: [4]u8 = undefined;
@@ -184,6 +192,15 @@ test "init: constrain clamps upper bound, reject throws" {
 test "init: month/day below 1 always rejects, regardless of overflow" {
     try std.testing.expectError(error.RangeError, @import("plain_month_day.zig").regulate(0, 1, .constrain));
     try std.testing.expectError(error.RangeError, @import("plain_month_day.zig").regulate(1, 0, .constrain));
+}
+
+test "from fields uses an out-of-range ISO year only for overflow" {
+    const common = try PlainMonthDay.from(.{ .fields = .{ .year = -999999, .monthCode = "M02", .day = 29 } }, .{});
+    try std.testing.expectEqual(@as(u8, 2), common.iso_month);
+    try std.testing.expectEqual(@as(u8, 28), common.iso_day);
+    const leap = try PlainMonthDay.from(.{ .fields = .{ .year = -1000000, .monthCode = "M02", .day = 29 } }, .{});
+    try std.testing.expectEqual(@as(u8, 29), leap.iso_day);
+    try std.testing.expectError(error.RangeError, PlainMonthDay.from(.{ .fields = .{ .year = -999999, .monthCode = "M02", .day = 29 } }, .{ .overflow = .reject }));
 }
 
 test "toPlainDate always constrains" {

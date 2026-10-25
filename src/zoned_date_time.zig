@@ -23,6 +23,15 @@ const Duration = duration_mod.Duration;
 const NS_PER_DAY: i128 = 86_400_000_000_000;
 const NS_PER_MS: i128 = 1_000_000;
 
+/// A local date-time used for offset matching must itself fit the
+/// representable PlainDateTime interval. Offset `use` and `ignore` are
+/// deliberately excluded: those modes may turn an out-of-range wall clock
+/// into an in-range exact instant.
+fn validateLocalDateTimeRange(local_ns: i128) TemporalError!void {
+    const bound: i128 = 100_000_001 * NS_PER_DAY;
+    if (local_ns <= -bound or local_ns >= bound) return error.RangeError;
+}
+
 /// Governs conflicts between a given numeric offset and what the time
 /// zone actually says at that wall-clock time -- ground-truthed default
 /// is `.reject` (different from `Disambiguation`'s default).
@@ -339,6 +348,8 @@ pub const ZonedDateTime = struct {
             @as(i128, parsed.time.microsecond) * 1_000 +
             parsed.time.nanosecond;
 
+        if (offset_option == .reject or offset_option == .prefer) try validateLocalDateTimeRange(local_ns);
+
         var tz = try loadTimeZone(allocator, io, parsed.time_zone_id);
         defer tz.deinit();
         const local_ms: i64 = @intCast(@divFloor(local_ns, NS_PER_MS));
@@ -591,3 +602,12 @@ pub const ZonedDateTime = struct {
         });
     }
 };
+
+test "ZonedDateTime rejects out-of-range wall clocks during offset matching" {
+    const lower = @as(i128, iso_calendar.toEpochDay(-271821, 4, 19)) * NS_PER_DAY;
+    const first_valid = @as(i128, iso_calendar.toEpochDay(-271821, 4, 20)) * NS_PER_DAY;
+    const upper = @as(i128, iso_calendar.toEpochDay(275760, 9, 13)) * NS_PER_DAY;
+    try std.testing.expectError(error.RangeError, validateLocalDateTimeRange(lower));
+    try validateLocalDateTimeRange(first_valid);
+    try validateLocalDateTimeRange(upper);
+}

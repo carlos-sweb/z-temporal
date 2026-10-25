@@ -36,8 +36,8 @@ test "constructor reference dates differ from from normalization" {
     const d = try t.PlainMonthDay.from(.{ .string = "2000-02-29" }, .{});
     try std.testing.expect(!t.PlainMonthDay.equals(c, d));
     const ym = try t.PlainYearMonth.from(.{ .string = "2024-01" }, .{});
-    try expectString(t.PlainYearMonth, try ym.add(.{ .days = -1 }, .constrain), "2024-01");
-    try expectString(t.PlainYearMonth, try ym.add(.{ .days = -35 }, .constrain), "2023-12");
+    try std.testing.expectError(error.RangeError, ym.add(.{ .days = -1 }, .constrain));
+    try std.testing.expectError(error.RangeError, ym.add(.{ .days = -35 }, .constrain));
 }
 test "grammar: basic forms, leap seconds, critical annotations and fractional precision" {
     try expectString(t.PlainTime, try t.PlainTime.from(.{ .string = "12" }, .{}), "12:00:00");
