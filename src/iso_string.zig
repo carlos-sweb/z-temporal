@@ -353,7 +353,9 @@ pub fn parsePlainTime(s: []const u8) TemporalError!ParsedTime {
         const possible_month = std.fmt.parseInt(u8, s[5..7], 10) catch return error.RangeError;
         break :blk possible_month >= 1 and possible_month <= 12;
     };
-    if (looks_like_year_month) {
+    const looks_like_compact_date_time = !prefixed and s.len >= 9 and isDigit(s[0]) and isDigit(s[1]) and isDigit(s[2]) and isDigit(s[3]) and isDigit(s[4]) and isDigit(s[5]) and isDigit(s[6]) and isDigit(s[7]) and (s[8] == 'T' or s[8] == 't' or s[8] == ' ');
+    const looks_like_signed_date_time = !prefixed and s.len > 0 and (s[0] == '+' or s[0] == '-');
+    if (looks_like_year_month or looks_like_compact_date_time or looks_like_signed_date_time) {
         _ = try parseDatePart(s, &pos);
         if (pos >= s.len or (s[pos] != 'T' and s[pos] != 't' and s[pos] != ' ')) return error.RangeError;
         pos += 1;
@@ -589,6 +591,42 @@ test "ZonedDateTime accepts a date-only string with a zone annotation" {
     try std.testing.expectEqual(@as(u8, 0), parsed.time.minute);
     try std.testing.expectEqualStrings("+09:00", parsed.time_zone_id);
     try std.testing.expectError(error.RangeError, parseZonedDateTime("2020-01-01"));
+}
+
+test "PlainTime from accepts compact and signed date-time ISO strings" {
+    const Case = struct { input: []const u8, expected: ParsedTime };
+    const cases = [_]Case{
+        .{ .input = "19761118T15:23:30.1+00:00", .expected = .{ .hour = 15, .minute = 23, .second = 30, .millisecond = 100 } },
+        .{ .input = "19761118T152330.1+0000", .expected = .{ .hour = 15, .minute = 23, .second = 30, .millisecond = 100 } },
+        .{ .input = "+001976-11-18T152330.1+00:00", .expected = .{ .hour = 15, .minute = 23, .second = 30, .millisecond = 100 } },
+        .{ .input = "+0019761118T15:23:30.1+00:00", .expected = .{ .hour = 15, .minute = 23, .second = 30, .millisecond = 100 } },
+        .{ .input = "+001976-11-18T15:23:30.1+0000", .expected = .{ .hour = 15, .minute = 23, .second = 30, .millisecond = 100 } },
+        .{ .input = "+001976-11-18T152330.1+0000", .expected = .{ .hour = 15, .minute = 23, .second = 30, .millisecond = 100 } },
+        .{ .input = "+0019761118T15:23:30.1+0000", .expected = .{ .hour = 15, .minute = 23, .second = 30, .millisecond = 100 } },
+        .{ .input = "+0019761118T152330.1+00:00", .expected = .{ .hour = 15, .minute = 23, .second = 30, .millisecond = 100 } },
+        .{ .input = "+0019761118T152330.1+0000", .expected = .{ .hour = 15, .minute = 23, .second = 30, .millisecond = 100 } },
+    };
+    for (cases) |case| try std.testing.expectEqual(case.expected, try parsePlainTime(case.input));
+}
+
+test "Duration compare relativeTo string accepts a date-only zone annotation" {
+    _ = try parseZonedDateTime("2000-01-01[UTC]");
+}
+
+test "Duration round relativeTo string accepts a date-only zone annotation" {
+    _ = try parseZonedDateTime("2000-01-01[UTC]");
+}
+
+test "Duration total relativeTo string accepts a date-only zone annotation" {
+    _ = try parseZonedDateTime("2000-01-01[UTC]");
+}
+
+test "ZonedDateTime equals accepts a case-insensitive date-only zone string" {
+    _ = try parseZonedDateTime("1970-01-01[UtC]");
+}
+
+test "ZonedDateTime equals accepts a normalized date-only offset zone string" {
+    _ = try parseZonedDateTime("1970-01-01[+00:00]");
 }
 
 test "parsePlainDateTime: time defaults to midnight when absent" {
