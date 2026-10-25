@@ -113,10 +113,10 @@ fn skipOffset(s: []const u8, pos: *usize) TemporalError!void {
 /// Zero or more `[...]` bracket annotations. Each is either a timezone
 /// name (no `=`, e.g. `[America/New_York]`, discarded by Plain types) or `[u-ca=CalendarId]` (optionally critical-flagged with a
 /// leading `!`). Calendar identifiers are validated against the enabled backend.
-fn annotations(s: []const u8, pos: *usize, validate_calendar: bool) TemporalError!void {
+fn annotations(s: []const u8, pos: *usize, validate_calendar: bool, initial_zone_seen: bool) TemporalError!void {
     var calendar_seen = false;
     var calendar_critical = false;
-    var zone_seen = false;
+    var zone_seen = initial_zone_seen;
     while (pos.* < s.len and s[pos.*] == '[') {
         pos.* += 1;
         const start = pos.*;
@@ -156,12 +156,12 @@ fn annotations(s: []const u8, pos: *usize, validate_calendar: bool) TemporalErro
         } else {
             if (zone_seen) return error.RangeError;
             zone_seen = true;
-            for (inner) |c| if (!(std.ascii.isAlphanumeric(c) or c == '/' or c == '_' or c == '-' or c == '+' or c == ':' or c == '.')) return error.RangeError;
+            try validateTimeZoneAnnotationIdentifier(inner);
         }
     }
 }
 fn skipAnnotations(s: []const u8, pos: *usize) TemporalError!void {
-    return annotations(s, pos, true);
+    return annotations(s, pos, true, false);
 }
 
 /// `Z`/`z`, or a signed `HH:MM[:SS[.fraction]]` offset, returned as total
@@ -208,12 +208,33 @@ fn parseRequiredOffsetNanoseconds(s: []const u8, pos: *usize) TemporalError!i64 
     return if (negative) -total_ns else total_ns;
 }
 
+/// Time zone annotations may name an IANA zone or use an offset identifier,
+/// but ISO time zone identifiers have minute precision. This deliberately does
+/// not constrain the leading offset of an Instant string, which may include
+/// seconds.
+fn validateTimeZoneAnnotationIdentifier(text: []const u8) TemporalError!void {
+    if (text.len == 0) return error.RangeError;
+    for (text) |c| if (!(std.ascii.isAlphanumeric(c) or c == '/' or c == '_' or c == '-' or c == '+' or c == ':' or c == '.')) return error.RangeError;
+
+    if (text[0] != '+' and text[0] != '-') return;
+    var pos: usize = 0;
+    _ = try parseRequiredOffsetNanoseconds(text, &pos);
+    if (pos != text.len) return error.RangeError;
+
+    const body = text[1..];
+    if (std.mem.indexOfScalar(u8, body, ':')) |first_colon| {
+        if (std.mem.indexOfScalarPos(u8, body, first_colon + 1, ':') != null) return error.RangeError;
+    } else if (body.len > 4) {
+        return error.RangeError;
+    }
+}
+
 /// Same shape as `skipAnnotations`, but never validates a `u-ca` value --
 /// ground-truthed that `Instant.from` silently accepts (and ignores) any
 /// calendar annotation, including a critically-flagged non-iso8601 one
 /// (`[!u-ca=hebrew]`), unlike every other type in this repo.
 fn skipAnnotationsNoCalendarValidation(s: []const u8, pos: *usize) TemporalError!void {
-    return annotations(s, pos, false);
+    return annotations(s, pos, false, false);
 }
 
 pub const ParsedInstant = struct { date: ParsedDate, time: ParsedTime, offset_nanoseconds: i64 };
@@ -276,8 +297,9 @@ pub fn parseZonedDateTime(s: []const u8) TemporalError!ParsedZonedDateTime {
     pos += 1; // consume ']'
     if (time_zone_id.len > 0 and time_zone_id[0] == '!') time_zone_id = time_zone_id[1..];
     if (time_zone_id.len == 0 or std.mem.indexOfScalar(u8, time_zone_id, '=') != null) return error.RangeError;
+    try validateTimeZoneAnnotationIdentifier(time_zone_id);
 
-    try skipAnnotations(s, &pos);
+    try annotations(s, &pos, true, true);
     if (pos != s.len) return error.RangeError;
     return .{ .date = date, .time = time, .offset_nanoseconds = offset_nanoseconds, .time_zone_id = time_zone_id, .isUtc = is_utc, .minutePrecision = offset_digits <= 4 };
 }
@@ -332,9 +354,10 @@ pub fn parsePlainTime(s: []const u8) TemporalError!ParsedTime {
         pos += 1;
     }
     const time = try parseTimePart(s, &pos);
+    if (!prefixed and pos < s.len and (s[pos] == '+' or s[pos] == '-')) return error.RangeError;
     try skipOffset(s, &pos);
     // PlainTime ignores calendar identifiers, including critical annotations.
-    try annotations(s, &pos, false);
+    try annotations(s, &pos, false, false);
     if (pos != s.len) return error.RangeError;
     return time;
 }
@@ -471,6 +494,19 @@ test "parsePlainTime: time-only and date-time forms" {
     const t2 = try parsePlainTime("2024-02-29T01:02:03.005");
     try std.testing.expectEqual(@as(u8, 1), t2.hour);
     try std.testing.expectEqual(@as(u16, 5), t2.millisecond);
+}
+
+test "ISO parser requires T before a time-only offset and restricts zone annotations" {
+    const time = try parsePlainTime("12:14");
+    try std.testing.expectEqual(@as(u8, 12), time.hour);
+    try std.testing.expectEqual(@as(u8, 14), time.minute);
+    try std.testing.expectError(error.RangeError, parsePlainTime("12-14"));
+
+    // A leading Instant offset may contain seconds, but a bracketed time
+    // zone offset identifier must have minute precision.
+    _ = try parseInstant("2021-08-19T17:30-07:00:01");
+    try std.testing.expectError(error.RangeError, parseInstant("2021-08-19T17:30-07:00:01[-07:00:01]"));
+    try std.testing.expectError(error.RangeError, parseZonedDateTime("1970-01-01T00:00[UTC][UTC]"));
 }
 
 test "parsePlainDateTime: time defaults to midnight when absent" {
