@@ -334,7 +334,7 @@ pub fn parsePlainTime(s: []const u8) TemporalError!ParsedTime {
         const m = try readNDigits(s, &pos, 2);
         const d = try readNDigits(s, &pos, 2);
         pos = 0;
-        if (m >= 1 and m <= 12 and d >= 1 and d <= 31 and (s.len == 4 or s[4] == '[')) return error.RangeError;
+        if (m >= 1 and m <= 12 and d >= 1 and d <= @import("iso_calendar.zig").daysInMonth(2000, @intCast(m)) and (s.len == 4 or s[4] == '[')) return error.RangeError;
     }
     if (!prefixed and s.len >= 6) {
         const end = std.mem.indexOfScalar(u8, s, '[') orelse s.len;
@@ -343,12 +343,15 @@ pub fn parsePlainTime(s: []const u8) TemporalError!ParsedTime {
             if (possible_month >= 1 and possible_month <= 12) return error.RangeError;
         }
     }
-    const looks_like_date = s.len >= 5 and (isDigit(s[0]) and s[1] == '0' or true) and blk: {
-        // A date part starts with a sign, or 4 digits followed by '-'.
-        if (s[0] == '+' or s[0] == '-') break :blk true;
-        break :blk s.len > 4 and isDigit(s[0]) and isDigit(s[1]) and isDigit(s[2]) and isDigit(s[3]) and (s[4] == '-' or std.mem.indexOfAny(u8, s, "Tt ") != null);
+    // Only a *valid* YYYY-MM prefix is ambiguous with a time plus offset.
+    // Invalid months (for example, 2021-13) are time-only forms: 20:21 with
+    // a -13 offset. Treating every four-digit prefix as a date incorrectly
+    // rejects those valid time strings.
+    const looks_like_year_month = !prefixed and s.len >= 7 and isDigit(s[0]) and isDigit(s[1]) and isDigit(s[2]) and isDigit(s[3]) and s[4] == '-' and isDigit(s[5]) and isDigit(s[6]) and blk: {
+        const possible_month = std.fmt.parseInt(u8, s[5..7], 10) catch return error.RangeError;
+        break :blk possible_month >= 1 and possible_month <= 12;
     };
-    if (looks_like_date) {
+    if (looks_like_year_month) {
         _ = try parseDatePart(s, &pos);
         if (pos >= s.len or (s[pos] != 'T' and s[pos] != 't' and s[pos] != ' ')) return error.RangeError;
         pos += 1;
@@ -357,7 +360,11 @@ pub fn parsePlainTime(s: []const u8) TemporalError!ParsedTime {
     // A sign following only `HH` is ambiguous with a date-like `HH-DD`
     // spelling and needs the `T` designator. A complete time-only form,
     // however, may carry an offset with or without that designator.
-    if (!prefixed and pos == 2 and pos < s.len and (s[pos] == '+' or s[pos] == '-')) return error.RangeError;
+    if (!prefixed and pos == 2 and pos + 2 < s.len and s[pos] == '-' and isDigit(s[pos + 1]) and isDigit(s[pos + 2])) {
+        const possible_month = std.fmt.parseInt(u8, s[0..2], 10) catch return error.RangeError;
+        const possible_day = std.fmt.parseInt(u8, s[pos + 1 .. pos + 3], 10) catch return error.RangeError;
+        if (possible_month >= 1 and possible_month <= 12 and possible_day >= 1 and possible_day <= @import("iso_calendar.zig").daysInMonth(2000, possible_month)) return error.RangeError;
+    }
     try skipOffset(s, &pos);
     // PlainTime ignores calendar identifiers, including critical annotations.
     try annotations(s, &pos, false, false);
@@ -515,6 +522,63 @@ test "ISO parser requires T before a time-only offset and restricts zone annotat
     _ = try parseInstant("2021-08-19T17:30-07:00:01");
     try std.testing.expectError(error.RangeError, parseInstant("2021-08-19T17:30-07:00:01[-07:00:01]"));
     try std.testing.expectError(error.RangeError, parseZonedDateTime("1970-01-01T00:00[UTC][UTC]"));
+}
+
+test "PlainDate toPlainDateTime T-designator regression" {
+    const time = try parsePlainTime("2021-13");
+    try std.testing.expectEqual(@as(u8, 20), time.hour);
+    try std.testing.expectEqual(@as(u8, 21), time.minute);
+    try std.testing.expectError(error.RangeError, parsePlainTime("2021-12"));
+}
+
+test "PlainDate toZonedDateTime T-designator regression" {
+    const time = try parsePlainTime("2021-00");
+    try std.testing.expectEqual(@as(u8, 20), time.hour);
+    try std.testing.expectEqual(@as(u8, 21), time.minute);
+    try std.testing.expectError(error.RangeError, parsePlainTime("2021-99"));
+}
+
+test "PlainDateTime withPlainTime T-designator regression" {
+    const time = try parsePlainTime("2021-13:00");
+    try std.testing.expectEqual(@as(u8, 20), time.hour);
+    try std.testing.expectEqual(@as(u8, 21), time.minute);
+}
+
+test "PlainTime compare T-designator regression" {
+    const time = try parsePlainTime("202112-13");
+    try std.testing.expectEqual(@as(u8, 20), time.hour);
+    try std.testing.expectEqual(@as(u8, 21), time.minute);
+    try std.testing.expectEqual(@as(u8, 12), time.second);
+}
+
+test "PlainTime from T-designator regression" {
+    const time = try parsePlainTime("13-14");
+    try std.testing.expectEqual(@as(u8, 13), time.hour);
+    try std.testing.expectEqual(@as(u8, 0), time.minute);
+}
+
+test "PlainTime equals T-designator regression" {
+    const time = try parsePlainTime("0230");
+    try std.testing.expectEqual(@as(u8, 2), time.hour);
+    try std.testing.expectEqual(@as(u8, 30), time.minute);
+}
+
+test "PlainTime since T-designator regression" {
+    const time = try parsePlainTime("0631");
+    try std.testing.expectEqual(@as(u8, 6), time.hour);
+    try std.testing.expectEqual(@as(u8, 31), time.minute);
+}
+
+test "PlainTime until T-designator regression" {
+    try std.testing.expectError(error.RangeError, parsePlainTime("12-14"));
+    try std.testing.expectError(error.RangeError, parsePlainTime("12-14:30"));
+    _ = try parsePlainTime("T12-14");
+}
+
+test "ZonedDateTime withPlainTime T-designator regression" {
+    const time = try parsePlainTime("0000-00");
+    try std.testing.expectEqual(@as(u8, 0), time.hour);
+    try std.testing.expectEqual(@as(u8, 0), time.minute);
 }
 
 test "parsePlainDateTime: time defaults to midnight when absent" {
