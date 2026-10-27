@@ -109,6 +109,15 @@ pub const PlainYearMonth = struct {
         return PlainDate.from(.{ .fields = .{ .year = self.year(), .monthCode = self.monthCode(&buf), .day = 1, .calendar = @tagName(self.calendar) } }, .{});
     }
 
+    /// Addition/subtraction converts the starting year-month to day 1 before
+    /// doing calendar arithmetic. Unlike `asPlainDate`, validate that
+    /// conversion so a partial boundary year-month cannot bypass the date
+    /// range check.
+    fn asPlainDateForAdd(self: PlainYearMonth) TemporalError!PlainDate {
+        if (self.calendar == .iso8601) return PlainDate.init(self.iso_year, self.iso_month, 1, null);
+        return self.asPlainDate();
+    }
+
     /// DifferenceTemporalPlainYearMonth builds ISO fields with day 1. At
     /// the partial minimum year-month that day is not representable, even
     /// though the year-month itself is constructible. Equal year-months
@@ -130,7 +139,7 @@ pub const PlainYearMonth = struct {
         // A year-month has no day or time component to which lower units can
         // be applied. They are rejected rather than folded through a date.
         if (d.weeks != 0 or d.days != 0 or d.hours != 0 or d.minutes != 0 or d.seconds != 0 or d.milliseconds != 0 or d.microseconds != 0 or d.nanoseconds != 0) return error.RangeError;
-        var start = try self.asPlainDate();
+        var start = try self.asPlainDateForAdd();
         if (d.sign() < 0) {
             const last_day = start.daysInMonth();
             // The partial maximum month is representable as a year-month,
@@ -272,6 +281,13 @@ test "init: asymmetric range boundary (day1-or-last-day rule)" {
     try std.testing.expectError(error.RangeError, PlainYearMonth.init(275760, 10, null, null));
     _ = try PlainYearMonth.init(-271821, 4, null, null);
     try std.testing.expectError(error.RangeError, PlainYearMonth.init(-271821, 3, null, null));
+}
+
+test "add/subtract reject converting the partial minimum year-month to day one" {
+    const minimum = try PlainYearMonth.init(-271821, 4, null, null);
+    const one_month = try Duration.init(0, 1, 0, 0, 0, 0, 0, 0, 0, 0);
+    try std.testing.expectError(error.RangeError, minimum.add(one_month, .constrain));
+    try std.testing.expectError(error.RangeError, minimum.subtract(one_month, .constrain));
 }
 
 test "toPlainDate always constrains regardless of day validity" {
