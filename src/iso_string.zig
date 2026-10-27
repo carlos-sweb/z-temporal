@@ -306,6 +306,32 @@ pub fn parseZonedDateTime(s: []const u8) TemporalError!ParsedZonedDateTime {
     return .{ .date = date, .time = time, .offset_nanoseconds = offset_nanoseconds, .time_zone_id = time_zone_id, .isUtc = is_utc, .minutePrecision = offset_digits <= 4 };
 }
 
+/// Extracts a time-zone identifier from a complete ISO date-time string.
+/// A bracket annotation wins over the leading offset; an unbracketed offset
+/// must have minute precision because it becomes a fixed time-zone ID.
+pub fn parseTimeZoneString(s: []const u8) TemporalError![]const u8 {
+    if (std.mem.indexOfScalar(u8, s, '[') != null) return (try parseZonedDateTime(s)).time_zone_id;
+
+    var pos: usize = 0;
+    _ = try parseDatePart(s, &pos);
+    if (pos >= s.len or (s[pos] != 'T' and s[pos] != 't' and s[pos] != ' ')) return error.RangeError;
+    pos += 1;
+    _ = try parseTimePart(s, &pos);
+    if (pos >= s.len) return error.RangeError;
+    if (s[pos] == 'Z' or s[pos] == 'z') {
+        pos += 1;
+        if (pos != s.len) return error.RangeError;
+        return "UTC";
+    }
+
+    const offset_start = pos;
+    _ = try parseRequiredOffsetNanoseconds(s, &pos);
+    if (pos != s.len) return error.RangeError;
+    const offset = s[offset_start..pos];
+    try validateTimeZoneAnnotationIdentifier(offset);
+    return offset;
+}
+
 /// A PlainDate string: date part, then an optional (ignored) time+offset,
 /// then optional annotations. Trailing content after the date part is
 /// tolerated only in these well-formed shapes -- anything else is

@@ -190,9 +190,37 @@ pub const Instant = struct {
     /// comment: pairs this exact instant with a time zone -- trivial, no
     /// disambiguation needed (an `Instant` is already exact).
     pub fn toZonedDateTimeISO(self: Instant, allocator: std.mem.Allocator, io: std.Io, time_zone_id: []const u8) TemporalError!zoned_date_time.ZonedDateTime {
-        return zoned_date_time.ZonedDateTime.init(allocator, io, self.epochNs, time_zone_id, null);
+        return zoned_date_time.ZonedDateTime.init(allocator, io, self.epochNs, time_zone_id, null) catch |err| switch (err) {
+            error.RangeError => zoned_date_time.ZonedDateTime.init(allocator, io, self.epochNs, try iso_string.parseTimeZoneString(time_zone_id), null),
+            else => err,
+        };
     }
 };
+
+test "Instant toZonedDateTimeISO accepts datetime timezone strings" {
+    const instant = try Instant.init(0);
+    try std.testing.expectError(error.RangeError, instant.toZonedDateTimeISO(std.testing.allocator, std.testing.io, "2021-08-19T17:30"));
+    try std.testing.expectError(error.RangeError, instant.toZonedDateTimeISO(std.testing.allocator, std.testing.io, "2021-08-19T17:30-07:00:00"));
+    const utc = try instant.toZonedDateTimeISO(std.testing.allocator, std.testing.io, "2021-08-19T17:30Z");
+    try std.testing.expectEqualStrings("UTC", utc.timeZoneId());
+    const offset = try instant.toZonedDateTimeISO(std.testing.allocator, std.testing.io, "2021-08-19T17:30-07:00");
+    try std.testing.expectEqualStrings("-07:00", offset.timeZoneId());
+    const annotation = try instant.toZonedDateTimeISO(std.testing.allocator, std.testing.io, "2021-08-19T17:30-07:00[UTC]");
+    try std.testing.expectEqualStrings("UTC", annotation.timeZoneId());
+}
+
+test "Instant toZonedDateTimeISO accepts leap-second datetime timezone strings" {
+    const instant = try Instant.init(0);
+    const utc = try instant.toZonedDateTimeISO(std.testing.allocator, std.testing.io, "2016-12-31T23:59:60+00:00[UTC]");
+    try std.testing.expectEqualStrings("UTC", utc.timeZoneId());
+    try std.testing.expectError(error.RangeError, instant.toZonedDateTimeISO(std.testing.allocator, std.testing.io, "2021-08-19T17:30:45.123456789+23:59[+23:59:60]"));
+}
+
+test "Instant toZonedDateTimeISO uses bracketed offset over ISO offset" {
+    const instant = try Instant.init(0);
+    const value = try instant.toZonedDateTimeISO(std.testing.allocator, std.testing.io, "2021-08-19T17:30:45.123456789-12:12[+01:46]");
+    try std.testing.expectEqualStrings("+01:46", value.timeZoneId());
+}
 
 test "fromEpochMilliseconds/fromEpochNanoseconds: range boundaries" {
     _ = try Instant.fromEpochNanoseconds(MAX_EPOCH_NS);
