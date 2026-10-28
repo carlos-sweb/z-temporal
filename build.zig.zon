@@ -1,6 +1,6 @@
 .{
     .name = .ztemporal,
-    .version = "0.2.8",
+    .version = "0.2.9",
     .minimum_zig_version = "0.17.0",
     .fingerprint = 0x337a7178fefc5ff6,
     .description = "Typed TC39 Temporal implementation for Zig, with optional ICU calendars and localization",
