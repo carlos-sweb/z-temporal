@@ -226,11 +226,13 @@ pub const ZonedDateTime = struct {
     pub const WithOptions = struct { overflow: Overflow = .constrain, offset: OffsetOption = .prefer, disambiguation: Disambiguation = .compatible };
     pub fn with(self: ZonedDateTime, allocator: Allocator, io: std.Io, fields: Fields, options: WithOptions) TemporalError!ZonedDateTime {
         if (fields.timeZone != null or fields.calendar != null or (self.calendar != .iso8601 and (fields.era == null) != (fields.eraYear == null))) return error.TypeError;
-        if ((self.calendar == .iso8601 or (fields.era == null and fields.eraYear == null)) and fields.year == null and fields.month == null and fields.day == null and fields.hour == null and fields.minute == null and fields.second == null and fields.millisecond == null and fields.microsecond == null and fields.nanosecond == null and fields.offset == null) return error.TypeError;
+        if ((self.calendar == .iso8601 or (fields.era == null and fields.eraYear == null)) and fields.year == null and fields.month == null and fields.monthCode == null and fields.day == null and fields.hour == null and fields.minute == null and fields.second == null and fields.millisecond == null and fields.microsecond == null and fields.nanosecond == null and fields.offset == null) return error.TypeError;
         const dt = try self.toPlainDateTime(allocator, io);
         const old_offset = try self.offset(allocator, io);
         defer allocator.free(old_offset);
-        return from(allocator, io, .{ .fields = .{ .year = if (fields.era != null or fields.eraYear != null) fields.year else fields.year orelse dt.year(), .era = fields.era, .eraYear = fields.eraYear, .month = if (fields.monthCode != null) fields.month else fields.month orelse dt.month(), .monthCode = fields.monthCode, .day = fields.day orelse dt.day(), .calendar = @tagName(self.calendar), .hour = fields.hour orelse dt.time.hour, .minute = fields.minute orelse dt.time.minute, .second = fields.second orelse dt.time.second, .millisecond = fields.millisecond orelse dt.time.millisecond, .microsecond = fields.microsecond orelse dt.time.microsecond, .nanosecond = fields.nanosecond orelse dt.time.nanosecond, .timeZone = self.timeZoneId(), .offset = fields.offset orelse old_offset } }, .{ .overflow = options.overflow, .offset = options.offset, .disambiguation = options.disambiguation });
+        var month_code_buf: [4]u8 = undefined;
+        const month_code = if (fields.monthCode) |code| code else if (fields.month == null) dt.date.monthCode(&month_code_buf) else null;
+        return from(allocator, io, .{ .fields = .{ .year = if (fields.era != null or fields.eraYear != null) fields.year else fields.year orelse dt.year(), .era = fields.era, .eraYear = fields.eraYear, .month = fields.month, .monthCode = month_code, .day = fields.day orelse dt.day(), .calendar = @tagName(self.calendar), .hour = fields.hour orelse dt.time.hour, .minute = fields.minute orelse dt.time.minute, .second = fields.second orelse dt.time.second, .millisecond = fields.millisecond orelse dt.time.millisecond, .microsecond = fields.microsecond orelse dt.time.microsecond, .nanosecond = fields.nanosecond orelse dt.time.nanosecond, .timeZone = self.timeZoneId(), .offset = fields.offset orelse old_offset } }, .{ .overflow = options.overflow, .offset = options.offset, .disambiguation = options.disambiguation });
     }
     pub fn withPlainTime(self: ZonedDateTime, allocator: Allocator, io: std.Io, time: ?PlainTime) TemporalError!ZonedDateTime {
         const dt = try self.toPlainDateTime(allocator, io);
@@ -623,4 +625,41 @@ test "ZonedDateTime hoursInDay rejects an unrepresentable next-day boundary" {
     const io = std.testing.io;
     const max = try ZonedDateTime.init(std.testing.allocator, io, instant_mod.MAX_EPOCH_NS, "UTC", null);
     try std.testing.expectError(error.RangeError, max.hoursInDay(std.testing.allocator, io));
+}
+
+test "ZonedDateTime with accepts a partial monthCode" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const value = try ZonedDateTime.from(allocator, io, .{ .fields = .{
+        .year = 1976,
+        .month = 11,
+        .day = 18,
+        .hour = 15,
+        .minute = 23,
+        .timeZone = "UTC",
+    } }, .{});
+    const result = try value.with(allocator, io, .{ .monthCode = "M05" }, .{});
+    const local = try result.toPlainDateTime(allocator, io);
+    try std.testing.expectEqual(@as(i32, 1976), local.date.iso_year);
+    try std.testing.expectEqual(@as(u8, 5), local.date.iso_month);
+    try std.testing.expectEqual(@as(u8, 18), local.date.iso_day);
+    try std.testing.expectEqual(@as(u8, 15), local.time.hour);
+}
+
+test "ZonedDateTime with constrains a partial monthCode day" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const value = try ZonedDateTime.from(allocator, io, .{ .fields = .{
+        .year = 2019,
+        .month = 1,
+        .day = 31,
+        .hour = 12,
+        .minute = 34,
+        .timeZone = "UTC",
+    } }, .{ .overflow = .reject });
+    const constrained = try value.with(allocator, io, .{ .monthCode = "M02" }, .{});
+    const local = try constrained.toPlainDateTime(allocator, io);
+    try std.testing.expectEqual(@as(u8, 2), local.date.iso_month);
+    try std.testing.expectEqual(@as(u8, 28), local.date.iso_day);
+    try std.testing.expectError(error.RangeError, value.with(allocator, io, .{ .monthCode = "M02" }, .{ .overflow = .reject }));
 }
